@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>My Farm | Finance Records v7.6</title>
+<title>My Farm | Finance Records v7.7</title>
 <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='10' fill='%2333523a'/%3E%3Ctext x='50%25' y='36' text-anchor='middle' font-family='Georgia%2C serif' font-size='18' font-weight='700' fill='%23b89254' dominant-baseline='middle'%3EFarm%3C/text%3E%3Ctext x='50%25' y='52' text-anchor='middle' font-family='Georgia%2C serif' font-size='16' font-weight='700' fill='%23b89254' dominant-baseline='middle'%3E%24%3C/text%3E%3C/svg%3E">
 <link rel="apple-touch-icon" href="data:image/png;base64,...">
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -883,15 +883,6 @@ tbody td { padding: 8px 12px; color: var(--text); vertical-align: middle; }
       </div>
     </div>
     <div class="settings-section">
-      <h3>In-Kind Labor Family Members</h3>
-      <p style="font-size:0.82rem;color:var(--text-muted);margin-bottom:10px">The first person in this list is treated as the farm owner. All other family members post a Contribution Expense entry when labor is logged.</p>
-      <div id="ikpersons-list" style="margin-bottom:12px"></div>
-      <div class="settings-row">
-        <div class="form-group" style="flex:2;min-width:140px"><label for="new-ikperson-name">Name</label><input type="text" id="new-ikperson-name" placeholder="e.g. Alex"></div>
-        <button class="btn btn-secondary" onclick="addIkPerson()">Add Person</button>
-      </div>
-    </div>
-    <div class="settings-section">
       <h3>Farm Backup</h3>
       <p style="font-size:0.82rem;color:var(--text-muted);margin-bottom:12px">Export a complete snapshot of all farm data: transactions, mileage, market log, invoices, purchase orders, locations, contacts, and settings. Use this to back up before major changes or to move data to another device.</p>
       <div class="settings-row">
@@ -1294,7 +1285,7 @@ function applyFarmIdentityToUI() {
   if (ph) ph.textContent = name;
   const lp = document.getElementById('ledger-print-name');
   if (lp) lp.textContent = name;
-  document.title = name + ' | Finance Records v7.6';
+  document.title = name + ' | Finance Records v7.7';
 }
 
 function loadFarmIdentityFields() {
@@ -1314,79 +1305,6 @@ function saveFarmIdentity() {
   localStorage.setItem('sff_farm_identity', JSON.stringify({ name, cityState, website }));
   applyFarmIdentityToUI();
   showToast('Farm identity saved.');
-}
-
-// =====================================================
-// IN-KIND LABOR PERSON SETTINGS
-// =====================================================
-let ikPersons = [];
-
-function loadIkPersons() {
-  try {
-    const s = JSON.parse(localStorage.getItem('sff_ik_persons') || 'null');
-    if (Array.isArray(s) && s.length) ikPersons = s;
-  } catch(e) {}
-}
-
-function saveIkPersonsToStorage() {
-  localStorage.setItem('sff_ik_persons', JSON.stringify(ikPersons));
-}
-
-function getIkOwnerPerson() {
-  return ikPersons[0] || 'Owner';
-}
-
-function renderIkPersonSelect() {
-  const sel = document.getElementById('ik-person');
-  if (!sel) return;
-  const current = sel.value;
-  sel.innerHTML = ikPersons.map(p => `<option value="${esc(p)}"${p === current ? ' selected' : ''}>${esc(p)}</option>`).join('');
-  if (typeof onIkPersonChange === 'function') onIkPersonChange();
-}
-
-function renderIkPersonsSettings() {
-  const el = document.getElementById('ikpersons-list');
-  if (!el) return;
-  if (!ikPersons.length) {
-    el.innerHTML = '<p style="font-size:0.82rem;color:var(--text-muted)">No family members configured.</p>';
-    return;
-  }
-  el.innerHTML = ikPersons.map((p, i) => `
-    <div style="display:flex;align-items:center;gap:10px;padding:6px 10px;background:var(--cream-dark);border-radius:4px;margin-bottom:6px">
-      <span style="flex:1;font-size:0.88rem;font-weight:${i === 0 ? '700' : '400'}">${esc(p)}${i === 0 ? ' <span style="font-size:0.72rem;color:var(--text-muted);font-weight:400">(owner)</span>' : ''}</span>
-      ${i > 0 ? `<button class="btn btn-sm" onclick="moveIkPersonUp(${i})" title="Move up" style="padding:2px 7px">Up</button>` : ''}
-      <button class="btn btn-danger btn-sm" onclick="removeIkPerson(${i})" title="Remove">&#x2715;</button>
-    </div>`).join('');
-}
-
-function addIkPerson() {
-  const inp = document.getElementById('new-ikperson-name');
-  const name = (inp.value || '').trim();
-  if (!name) { alert('Enter a name.'); return; }
-  if (ikPersons.includes(name)) { alert(name + ' is already in the list.'); return; }
-  ikPersons.push(name);
-  saveIkPersonsToStorage();
-  inp.value = '';
-  renderIkPersonsSettings();
-  renderIkPersonSelect();
-}
-
-function removeIkPerson(i) {
-  if (i === 0 && ikPersons.length > 1) {
-    if (!confirm('Removing the first person changes who is treated as the farm owner. Continue?')) return;
-  }
-  ikPersons.splice(i, 1);
-  saveIkPersonsToStorage();
-  renderIkPersonsSettings();
-  renderIkPersonSelect();
-}
-
-function moveIkPersonUp(i) {
-  if (i < 1) return;
-  [ikPersons[i-1], ikPersons[i]] = [ikPersons[i], ikPersons[i-1]];
-  saveIkPersonsToStorage();
-  renderIkPersonsSettings();
-  renderIkPersonSelect();
 }
 
 // =====================================================
@@ -1423,9 +1341,6 @@ function init() {
   renderLocationSettings();
   renderContactSettings();
   checkTaxBanner();
-  loadIkPersons();
-  renderIkPersonSelect();
-  renderIkPersonsSettings();
   applyFarmIdentityToUI();
   loadFarmIdentityFields();
 }
@@ -1589,7 +1504,6 @@ function exportFarmBackup() {
     contacts,
     dismissedTaxQuarters,
     farmIdentity: getFarmIdentity(),
-    ikPersons
   };
   const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
   const url = URL.createObjectURL(blob);
@@ -1643,10 +1557,6 @@ function importFarmBackup(input) {
       if (data.farmIdentity && typeof data.farmIdentity === 'object') {
         localStorage.setItem('sff_farm_identity', JSON.stringify(data.farmIdentity));
       }
-      if (Array.isArray(data.ikPersons) && data.ikPersons.length) {
-        ikPersons = data.ikPersons;
-        saveIkPersonsToStorage();
-      }
       // If restoring a V2 backup, clear the migration flag so it runs again
       if ((data.version || 2) < 3) {
         localStorage.removeItem('sff_v3_migrated');
@@ -1668,8 +1578,6 @@ function importFarmBackup(input) {
       renderLocationSettings();
       renderContactSettings();
       checkTaxBanner();
-      renderIkPersonSelect();
-      renderIkPersonsSettings();
       applyFarmIdentityToUI();
       loadFarmIdentityFields();
       el.textContent = 'Farm backup restored: ' + transactions.length + ' transactions, ' + invoices.length + ' invoices, ' + purchaseOrders.length + ' purchase orders, ' + mileageLog.length + ' mileage entries.';
