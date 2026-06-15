@@ -4,6 +4,8 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>My Farm | Finance Records v7.6</title>
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='10' fill='%2333523a'/%3E%3Ctext x='50%25' y='36' text-anchor='middle' font-family='Georgia%2C serif' font-size='18' font-weight='700' fill='%23b89254' dominant-baseline='middle'%3EFarm%3C/text%3E%3Ctext x='50%25' y='52' text-anchor='middle' font-family='Georgia%2C serif' font-size='16' font-weight='700' fill='%23b89254' dominant-baseline='middle'%3E%24%3C/text%3E%3C/svg%3E">
+<link rel="apple-touch-icon" href="data:image/png;base64,...">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:ital,wght@0,400;0,600;0,700;1,400;1,600&family=Lato:wght@400;700&display=swap" rel="stylesheet">
@@ -4871,6 +4873,39 @@ function runMigrationManually() {
 // BOOT
 // =====================================================
 init();
+</script>
+  <script>
+(function() {
+  const c = document.createElement('canvas');
+  c.width = c.height = 180;
+  const ctx = c.getContext('2d');
+  // Background
+  const r = 24;
+  ctx.beginPath();
+  ctx.moveTo(r, 0); ctx.lineTo(180 - r, 0);
+  ctx.quadraticCurveTo(180, 0, 180, r);
+  ctx.lineTo(180, 180 - r);
+  ctx.quadraticCurveTo(180, 180, 180 - r, 180);
+  ctx.lineTo(r, 180);
+  ctx.quadraticCurveTo(0, 180, 0, 180 - r);
+  ctx.lineTo(0, r);
+  ctx.quadraticCurveTo(0, 0, r, 0);
+  ctx.closePath();
+  ctx.fillStyle = '#33523a';
+  ctx.fill();
+  // Text
+  ctx.fillStyle = '#b89254';
+  ctx.textAlign = 'center';
+  ctx.font = 'bold 52px Georgia, serif';
+  ctx.fillText('Farm', 90, 88);
+  ctx.font = 'bold 46px Georgia, serif';
+  ctx.fillText('$', 90, 142);
+  // Apply as apple-touch-icon
+  const link = document.createElement('link');
+  link.rel = 'apple-touch-icon';
+  link.href = c.toDataURL('image/png');
+  document.head.appendChild(link);
+})();
 </script>
 </body>
 </html>
