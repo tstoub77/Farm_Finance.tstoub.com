@@ -1372,7 +1372,10 @@ function onTxTypeChange() {
   fgQty.style.display = def.showQty ? '' : 'none';
   const fgUnitCost = document.getElementById('fg-unit-cost');
   fgUnitCost.style.display = def.showQty ? '' : 'none';
-  if (!def.showQty) document.getElementById('tx-unit-cost').value = '';
+  if (!def.showQty) {
+    document.getElementById('tx-unit-cost').value = '';
+    document.getElementById('tx-qty').value = '';
+  }
 
   const fgLoc = document.getElementById('fg-location');
   const fgChan = document.getElementById('fg-channel');
@@ -1384,6 +1387,8 @@ function onTxTypeChange() {
   } else {
     fgLoc.style.display = 'none';
     fgChan.style.display = 'none';
+    document.getElementById('tx-location').value = '';
+    document.getElementById('tx-channel').value = '';
   }
 
   onCategoryChange();
@@ -1409,9 +1414,12 @@ function onCategoryChange() {
     fgSchf.style.display = schf ? '' : 'none';
     if (schf) {
       document.getElementById('tx-schf').value = schf;
+    } else {
+      document.getElementById('tx-schf').value = '';
     }
   } else {
     fgSchf.style.display = 'none';
+    document.getElementById('tx-schf').value = '';
   }
 }
 
@@ -1482,6 +1490,7 @@ function loadFromStorage() {
   document.getElementById('settings-rate').value = mileageRate;
   migrateToV3();
   migrateToV3_1();
+  migrateToV3_2();
 }
 
 // =====================================================
@@ -1565,9 +1574,13 @@ function importFarmBackup(input) {
       if ((data.version || 2) < 4) {
         localStorage.removeItem('sff_v3_1_migrated');
       }
+      // Always re-check imported data for stray Schedule F codes on revenue,
+      // regardless of backup version -- the source bug predates version tracking.
+      localStorage.removeItem('sff_v3_2_migrated');
       saveToStorage();
       migrateToV3();
       migrateToV3_1();
+      migrateToV3_2();
       renderLedgerFull();
       renderMileage();
       renderMarket();
@@ -1781,7 +1794,10 @@ function addTransaction() {
       location: i === 0 ? location : '',
       channel: i === 0 ? channel : '',
       qty: i === 0 ? qty : undefined,
-      schf: p.schf !== undefined ? p.schf : (p.cat === cat ? schf : ''),
+      // Revenue legs never carry a Schedule F code -- Schedule F Part II is farm
+      // expenses only. Enforced here regardless of what the (possibly stale) form
+      // field holds, so this can't regress the same way it did before.
+      schf: p.cls === 'Revenue' ? '' : (p.schf !== undefined ? p.schf : (p.cat === cat ? schf : '')),
       check: i === 0 ? check : '',
       notes: rowNotes
     });
@@ -3906,6 +3922,7 @@ function resetInvoiceForm() {
   document.getElementById('inv-date').value = todayStr();
   document.getElementById('inv-terms').value = '0';
   document.getElementById('inv-cat').value = 'Sales of Produce';
+  document.getElementById('inv-location').value = '';
   invRecalcDue();
   document.getElementById('inv-lines').innerHTML = '';
   invAddLine('', 1, '');
@@ -4736,6 +4753,33 @@ function migrateToV3_1() {
     renderLedgerFull(); updateLedgerTiles(); renderMileage(); renderDashboard();
   }
   console.log('V3.1 auto-migration:', result);
+}
+
+// =====================================================
+// V3.2 DATA MIGRATION: strip stray Schedule F codes off Revenue legs
+// (leftover from a form bug where a hidden Schedule F selection carried
+// over onto Cash Sale / Deposit revenue rows)
+// =====================================================
+function runMigration_v3_2() {
+  let schfClearedFromRevenue = 0;
+  transactions.forEach(t => {
+    if (t.cls === 'Revenue' && t.schf) {
+      t.schf = '';
+      schfClearedFromRevenue++;
+    }
+  });
+  return { schfClearedFromRevenue };
+}
+
+function migrateToV3_2() {
+  if (localStorage.getItem('sff_v3_2_migrated') === '1') return;
+  const result = runMigration_v3_2();
+  localStorage.setItem('sff_v3_2_migrated', '1');
+  if (result.schfClearedFromRevenue > 0) {
+    saveToStorage();
+    renderLedgerFull(); updateLedgerTiles(); renderDashboard();
+  }
+  console.log('V3.2 auto-migration (Schedule F on Revenue cleanup):', result);
 }
 
 function runMigrationManually() {
