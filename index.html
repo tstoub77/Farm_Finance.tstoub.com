@@ -267,6 +267,8 @@ tbody td { padding: 8px 12px; color: var(--text); vertical-align: middle; }
   .report-table td, tbody td { padding: 4pt 8pt; border-bottom: 0.5pt solid #e2ddcd; color: var(--print-ink) !important; }
   .report-table .num, [style*="text-align:right"] { font-variant-numeric: tabular-nums; }
   tfoot td { background: #f6f4ec !important; font-weight: 700; border-top: 1pt solid var(--print-ink); padding: 5pt 8pt; }
+  /* Prevent tfoot (e.g. mileage Totals row) from repeating at every page break when a table spans multiple pages */
+  tfoot { display: table-row-group; }
   .bs-grid { display: table !important; width: 100%; border-collapse: collapse; border-spacing: 0; }
   .bs-section { display: table-cell !important; border: 0.75pt solid var(--print-rule) !important; padding: 9pt !important; vertical-align: top; background: #fff !important; }
   .bs-section h4 { font-family: 'Playfair Display', serif; font-size: 9.5pt; border-bottom: 0.75pt solid var(--print-rule); margin-bottom: 5pt; padding-bottom: 3pt; color: var(--print-ink) !important; }
@@ -1829,6 +1831,9 @@ function deleteTransactionGroup(groupId) {
     alert('These entries were posted by purchase order ' + linkedPO.poNum + '. Use Reopen or Delete on that PO in the Purchasing tab so its status and inventory value stay in sync.');
     return;
   }
+  const first = transactions.find(t => t.groupId === groupId);
+  const label = first ? `"${first.desc}" on ${fmtDate(first.date)}` : 'this transaction';
+  if (!confirm(`Delete ${label}? This cannot be undone.`)) return;
   transactions = transactions.filter(t => t.groupId !== groupId);
   markUnsaved();
   renderLedgerFull();
@@ -2362,13 +2367,41 @@ function importLedgerCSV(input) {
     }
     transactions = [...transactions, ...toAdd];
     sortTransactions();
+
+    // Check every transaction group the import touched (including legs that were
+    // already in the ledger) so a CSV that only reimports one leg of a pair gets
+    // flagged instead of silently posting a lopsided entry.
+    const touchedGroupIds = new Set(toAdd.map(r => r.groupId).filter(gid => gid !== undefined && gid !== null));
+    const unbalanced = unbalancedGroupCount(transactions.filter(t => touchedGroupIds.has(t.groupId)));
+
     markUnsaved();
     renderLedger();
     updateLedgerTiles();
-    showImportSummary('ledger-import-summary', toAdd.length, skipped, dupes);
+    showImportSummary('ledger-import-summary', toAdd.length, skipped, dupes, unbalanced);
   };
   reader.readAsText(file);
   input.value = '';
+}
+
+// A transaction group balances when its Asset/Inventory legs equal its
+// Liability/Equity/Revenue/Expense legs -- the accounting equation restated
+// per-transaction, using this ledger's sign convention (expense classes store
+// their increase as negative). See TX_TYPES postings() for how a balanced
+// group is normally constructed.
+const ASSET_LIKE_CLS = new Set(['Asset', 'Inventory']);
+function unbalancedGroupCount(rows) {
+  const byGroup = new Map();
+  for (const t of rows) {
+    if (t.groupId === undefined || t.groupId === null) continue;
+    if (!byGroup.has(t.groupId)) byGroup.set(t.groupId, []);
+    byGroup.get(t.groupId).push(t);
+  }
+  let bad = 0;
+  for (const legs of byGroup.values()) {
+    const sum = legs.reduce((s, t) => s + (ASSET_LIKE_CLS.has(t.cls) ? t.amount : -t.amount), 0);
+    if (Math.abs(sum) > 0.01) bad++;
+  }
+  return bad;
 }
 
 function parseLedgerCSV(text) {
@@ -2493,6 +2526,9 @@ function postMileageToLedger(entry) {
 }
 
 function deleteMileage(miId) {
+  const trip = mileageLog.find(m => m.miId === miId);
+  const label = trip ? `${fmtDate(trip.date)} to ${trip.location}` : 'this trip';
+  if (!confirm(`Delete mileage entry for ${label}? This cannot be undone.`)) return;
   mileageLog = mileageLog.filter(m => m.miId !== miId);
   transactions = transactions.filter(t => t.miId !== miId);
   markUnsaved();
@@ -3509,6 +3545,9 @@ function addMarketDay() {
 }
 
 function deleteMarketDay(id) {
+  const day = marketLog.find(m => m.id === id);
+  const label = day ? `${fmtDate(day.date)} at ${day.location}` : 'this market day';
+  if (!confirm(`Delete market day ${label}? This cannot be undone.`)) return;
   marketLog = marketLog.filter(m => m.id !== id);
   markUnsaved();
   renderMarket();
@@ -3823,11 +3862,16 @@ function fmtTimestamp() {
   return `${d.getFullYear()}-${mm}-${dd}_${hh}${min}`;
 }
 
-function showImportSummary(id, imported, skipped, dupes) {
+function showImportSummary(id, imported, skipped, dupes, unbalanced) {
   const el = document.getElementById(id);
-  el.textContent = `${imported} row${imported !== 1 ? 's' : ''} imported${skipped ? ', ' + skipped + ' skipped' : ''}${dupes ? ', ' + dupes + ' duplicates skipped' : ''}.`;
+  let msg = `${imported} row${imported !== 1 ? 's' : ''} imported${skipped ? ', ' + skipped + ' skipped' : ''}${dupes ? ', ' + dupes + ' duplicates skipped' : ''}.`;
+  if (unbalanced) {
+    msg += ` Warning: ${unbalanced} transaction group${unbalanced !== 1 ? 's' : ''} did not balance (legs don't net to zero) -- review before trusting these totals.`;
+  }
+  el.textContent = msg;
+  el.classList.toggle('import-error', !!unbalanced);
   el.style.display = 'block';
-  setTimeout(() => { el.style.display = 'none'; }, 6000);
+  if (!unbalanced) setTimeout(() => { el.style.display = 'none'; }, 6000);
 }
 
 function parseDate(str) {
