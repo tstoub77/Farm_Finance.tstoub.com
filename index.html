@@ -823,7 +823,8 @@ tbody td { padding: 8px 12px; color: var(--text); vertical-align: middle; }
       <span style="display:flex;align-items:center;gap:5px;color:var(--text-muted)"><span style="width:12px;height:12px;border-radius:2px;background:#fff3cd;border:1px solid #d4a500;display:inline-block"></span>Ledger only (timing / non-cash)</span>
       <span style="display:flex;align-items:center;gap:5px;color:var(--text-muted)"><span style="width:12px;height:12px;border-radius:2px;background:#e2e3e5;border:1px solid #aaa;display:inline-block"></span>Ignored</span>
     </div>
-    <p style="font-size:0.75rem;color:var(--text-muted);margin-bottom:14px">Click an unmatched row to select it, then click its match on the other side. To pair several ledger rows to one bank deposit (for example a Square deposit net of fees), click each ledger row first, then click the bank row and confirm the group. Click a matched row to unmatch; unmatching any row in a group clears the whole group. Double-click any unmatched row to mark Ignored.</p>
+    <p style="font-size:0.75rem;color:var(--text-muted);margin-bottom:14px">Click an unmatched row to select it, then click its match on the other side. To pair several ledger rows to one bank deposit (for example a Square deposit net of fees), click each ledger row first, then click the bank row and confirm the group. Click a matched row to unmatch; unmatching any row in a group clears the whole group. Double-click any unmatched row to mark Ignored. Both tables are sorted newest first.</p>
+    <p style="font-size:0.75rem;color:var(--text-muted);margin-bottom:14px">Auto-match also pairs same-day ledger entries named "&lt;Vendor&gt;" and "&lt;Vendor&gt; Fee(s)" against a single bank deposit automatically when their combined total matches one unmatched bank row &mdash; e.g. a "Square" revenue entry plus a "Square Fees" expense entry will auto-group against the net deposit. Keep those descriptions consistent to get the most auto-matches.</p>
 
     <div id="recon-group-bar" style="display:none;align-items:center;gap:14px;flex-wrap:wrap;margin-bottom:14px;padding:10px 14px;background:#e7f0fe;border:1px solid #9ec3f5;border-radius:6px;font-size:0.82rem" role="status" aria-live="polite"></div>
 
@@ -1287,7 +1288,7 @@ function applyFarmIdentityToUI() {
   if (ph) ph.textContent = name;
   const lp = document.getElementById('ledger-print-name');
   if (lp) lp.textContent = name;
-  document.title = name + ' | Finance Records v7.7';
+  document.title = name + ' | Finance Records v7.8';
 }
 
 function loadFarmIdentityFields() {
@@ -3138,8 +3139,43 @@ function reconAutoMatch() {
       b.status='matched'; b.matchId=k.id; k.status='matched'; k.matchId=b.id;
     }
   }
+  // Pass 3: vendor + fee pairing. Ledger entries named "<Vendor>" (revenue) and
+  // "<Vendor> Fee(s)" (expense) on the same day are grouped and their combined
+  // total matched against a single unmatched bank deposit within 5 days, mirroring
+  // the manual many-to-one pairing so processor deposits (Square, Stripe, etc.)
+  // net of fees auto-reconcile without a click.
+  reconAutoMatchVendorFees();
   reconRender();
   reconUpdateTiles();
+}
+
+const RECON_FEE_SUFFIX_RE = /\s+fees?$/i;
+
+function reconAutoMatchVendorFees() {
+  const byDate = {};
+  reconBookRows.forEach(r => {
+    if (r.status !== 'unmatched') return;
+    (byDate[r.date] = byDate[r.date] || []).push(r);
+  });
+  Object.keys(byDate).forEach(date => {
+    const rows = byDate[date];
+    const feeRows = rows.filter(r => RECON_FEE_SUFFIX_RE.test(r.desc.trim()));
+    const dDate = new Date(date+'T00:00:00');
+    feeRows.forEach(feeRow => {
+      if (feeRow.status !== 'unmatched') return;
+      const base = feeRow.desc.trim().replace(RECON_FEE_SUFFIX_RE, '').toLowerCase();
+      if (!base) return;
+      const baseRows = rows.filter(r => r.status==='unmatched' && r.id!==feeRow.id && r.desc.trim().toLowerCase()===base);
+      if (!baseRows.length) return;
+      const group = [feeRow, ...baseRows];
+      const total = group.reduce((s,r) => s+r.amount, 0);
+      const candidates = reconBankRows.filter(b => b.status==='unmatched' && Math.abs(b.amount-total)<0.005 && Math.abs((new Date(b.date+'T00:00:00')-dDate)/86400000)<=5);
+      if (candidates.length !== 1) return;
+      const bank = candidates[0];
+      bank.status='matched'; bank.matchId=group.map(r=>r.id);
+      group.forEach(r => { r.status='matched'; r.matchId=bank.id; });
+    });
+  });
 }
 
 function reconGetFiltered(rows) {
@@ -3165,10 +3201,14 @@ function reconBadge(status) {
   return `<span style="display:inline-block;font-size:0.65rem;font-weight:700;letter-spacing:0.05em;padding:2px 7px;border-radius:10px;text-transform:uppercase;${map[status]||map.unmatched}">${status}</span>`;
 }
 
+function reconSortNewestFirst(rows) {
+  return [...rows].sort((a,b) => b.date.localeCompare(a.date));
+}
+
 function reconRender() {
   reconBuildGroupMap();
-  const fb = reconGetFiltered(reconBankRows);
-  const fk = reconGetFiltered(reconBookRows);
+  const fb = reconSortNewestFirst(reconGetFiltered(reconBankRows));
+  const fk = reconSortNewestFirst(reconGetFiltered(reconBookRows));
   document.getElementById('recon-bank-count').textContent = fb.length + ' of ' + reconBankRows.length;
   document.getElementById('recon-book-count').textContent = fk.length + ' of ' + reconBookRows.length;
   reconRenderTbody('recon-bank-tbody', fb, 'b');
