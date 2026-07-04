@@ -3165,7 +3165,11 @@ function reconAutoMatchVendorFees() {
       if (feeRow.status !== 'unmatched') return;
       const base = feeRow.desc.trim().replace(RECON_FEE_SUFFIX_RE, '').toLowerCase();
       if (!base) return;
-      const baseRows = rows.filter(r => r.status==='unmatched' && r.id!==feeRow.id && r.desc.trim().toLowerCase()===base);
+      // Split Deposit's shared Checking leg is always literally "Split deposit"
+      // (see saveSplitDeposit), not the vendor name, since it can bundle several
+      // locations/channels into one bank line. Treat it as a generic base so a
+      // same-day fee entry still groups with it.
+      const baseRows = rows.filter(r => r.status==='unmatched' && r.id!==feeRow.id && (r.desc.trim().toLowerCase()===base || r.desc.trim().toLowerCase()==='split deposit'));
       if (!baseRows.length) return;
       const group = [feeRow, ...baseRows];
       const total = group.reduce((s,r) => s+r.amount, 0);
