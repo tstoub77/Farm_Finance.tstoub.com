@@ -2633,16 +2633,24 @@ function importMileageCSV(input) {
         miles, vehicles, rate, expense
       };
       mileageLog.push(entry);
-      // Never auto-post to ledger on import. Ledger CSV already contains mileage rows.
-      // Ledger posting only happens on manual trip entry via addMileage().
+      // No ledger row is posted here directly -- a paired Ledger CSV import may
+      // already contain these trips' legs. Instead, runMigration_v3_1() below
+      // reconciles the two: it links any pre-existing ledger legs to this entry's
+      // miId (so a coordinated Ledger+Mileage import doesn't duplicate), and only
+      // then backfills a ledger entry for any trip that's still missing one --
+      // which is what makes a standalone Mileage-only import post to the ledger.
       imported++;
     }
     mileageLog.sort((a, b) => a.date.localeCompare(b.date));
+    const repair = runMigration_v3_1();
     markUnsaved();
     renderMileage();
     renderLedgerFull();
     updateLedgerTiles();
-    showImportSummary('mileage-import-summary', imported, skipped);
+    const note = repair.mileageBackfilled > 0
+      ? `Linked ${repair.mileageBackfilled} trip${repair.mileageBackfilled !== 1 ? 's' : ''} to new ledger entries.`
+      : '';
+    showImportSummary('mileage-import-summary', imported, skipped, 0, 0, note);
   };
   reader.readAsText(file);
   input.value = '';
@@ -3932,16 +3940,17 @@ function fmtTimestamp() {
   return `${d.getFullYear()}-${mm}-${dd}_${hh}${min}`;
 }
 
-function showImportSummary(id, imported, skipped, dupes, unbalanced) {
+function showImportSummary(id, imported, skipped, dupes, unbalanced, note) {
   const el = document.getElementById(id);
   let msg = `${imported} row${imported !== 1 ? 's' : ''} imported${skipped ? ', ' + skipped + ' skipped' : ''}${dupes ? ', ' + dupes + ' duplicates skipped' : ''}.`;
   if (unbalanced) {
     msg += ` Warning: ${unbalanced} transaction group${unbalanced !== 1 ? 's' : ''} did not balance (legs don't net to zero) -- review before trusting these totals.`;
   }
+  if (note) msg += ` ${note}`;
   el.textContent = msg;
   el.classList.toggle('import-error', !!unbalanced);
   el.style.display = 'block';
-  if (!unbalanced) setTimeout(() => { el.style.display = 'none'; }, 6000);
+  if (!unbalanced && !note) setTimeout(() => { el.style.display = 'none'; }, 6000);
 }
 
 function parseDate(str) {
