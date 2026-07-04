@@ -2684,6 +2684,16 @@ function generateReport() {
     acc[t.schf] = (acc[t.schf] || 0) + Math.abs(t.amount);
     return acc;
   }, {});
+  const schfTotal = Object.values(schfGroups).reduce((s, v) => s + v, 0);
+  // Reconciles Schedule F to the Expense Breakdown: inventory purchases carry
+  // their Schedule F code at purchase (cash-basis deduction) but post to the
+  // Inventory asset, not an Expense class, so they're outside totalExp. Inventory
+  // Used posts the offsetting COGS expense but with schf explicitly blanked
+  // (see TX_TYPES) so it isn't deducted twice. The two adjustments below are
+  // exactly the difference between totalExp and schfTotal.
+  const invPurchasedSchf = filtered.filter(t => t.cls === 'Inventory' && t.schf).reduce((s, t) => s + t.amount, 0);
+  const invUsedCOGS = filtered.filter(t => t.cls === 'Other Expense').reduce((s, t) => s + Math.abs(t.amount), 0);
+  const showSchfRecon = schfTotal > 0 || invPurchasedSchf > 0 || invUsedCOGS > 0;
   const miFiltered = mileageLog.filter(m => inPeriod(m.date));
   const periodLabel = period === 'annual' ? `Full Year ${year}` : `Q${period} ${year}`;
 
@@ -2787,6 +2797,22 @@ function generateReport() {
         <thead><tr><th>Schedule F Category</th><th style="text-align:right">Total</th></tr></thead>
         <tbody>${Object.entries(schfGroups).sort((a,b)=>b[1]-a[1]).map(([k,v]) =>
           `<tr><td>${esc(k)}</td><td style="text-align:right">${fmt$(v)}</td></tr>`).join('')}</tbody>
+        <tfoot><tr><td>Total Schedule F Deductions</td><td style="text-align:right">${fmt$(schfTotal)}</td></tr></tfoot>
+      </table>
+    </div>`;
+  }
+
+  if (showSchfRecon) {
+    html += `<div class="report-section">
+      <h3>Reconciling Schedule F to Expenses</h3>
+      <p class="schf-note">Schedule F deducts inventory when purchased (cash basis). The Expense Breakdown recognizes it when used. This is why the two totals above don't match -- it isn't an error.</p>
+      <table class="report-table">
+        <tbody>
+          <tr><td>Expense Breakdown Total (this period)</td><td style="text-align:right">${fmt$(Math.abs(totalExp))}</td></tr>
+          <tr><td>Less: Inventory Used / COGS (already deducted at purchase)</td><td style="text-align:right">(${fmt$(invUsedCOGS)})</td></tr>
+          <tr><td>Plus: Inventory Purchased this period (deducted now)</td><td style="text-align:right">${fmt$(invPurchasedSchf)}</td></tr>
+        </tbody>
+        <tfoot><tr><td>= Total Schedule F Deductions</td><td style="text-align:right">${fmt$(schfTotal)}</td></tr></tfoot>
       </table>
     </div>`;
   }
