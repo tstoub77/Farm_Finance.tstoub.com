@@ -1493,6 +1493,8 @@ function loadFromStorage() {
   migrateToV3();
   migrateToV3_1();
   migrateToV3_2();
+  migrateToV3_3();
+  migrateToV3_4();
 }
 
 // =====================================================
@@ -1579,10 +1581,18 @@ function importFarmBackup(input) {
       // Always re-check imported data for stray Schedule F codes on revenue,
       // regardless of backup version -- the source bug predates version tracking.
       localStorage.removeItem('sff_v3_2_migrated');
+      // Always re-run the invoice-payment location backfill on restore -- older
+      // backups posted invoice payments before locations were stamped on legs.
+      localStorage.removeItem('sff_v3_3_migrated');
+      // Always re-run the location backfill/rename on restore so an older backup
+      // that predates real jurisdictions gets its locations filled and renamed.
+      localStorage.removeItem('sff_v3_4_migrated');
       saveToStorage();
       migrateToV3();
       migrateToV3_1();
       migrateToV3_2();
+      migrateToV3_3();
+      migrateToV3_4();
       renderLedgerFull();
       renderMileage();
       renderMarket();
@@ -2331,10 +2341,10 @@ function printLedger() {
 function exportLedgerCSV() {
   const ts = fmtTimestamp();
   const year = new Date().getFullYear();
-  const headers = 'Date,Description,Category,Classification,Amount,Notes,ScheduleF,CheckNum,TxType,GroupId,Channel,Qty';
+  const headers = 'Date,Description,Category,Classification,Amount,Notes,ScheduleF,CheckNum,TxType,GroupId,Channel,Location,Qty';
   const rows = transactions.map(t =>
     [t.date, csvQ(t.desc), csvQ(t.cat), csvQ(t.cls), t.amount.toFixed(2),
-     csvQ(t.notes||''), csvQ(t.schf||''), csvQ(t.check||''), csvQ(t.txType||''), t.groupId||'', csvQ(t.channel||''),
+     csvQ(t.notes||''), csvQ(t.schf||''), csvQ(t.check||''), csvQ(t.txType||''), t.groupId||'', csvQ(t.channel||''), csvQ(t.location||''),
      t.qty !== undefined && t.qty !== null ? t.qty : ''].join(',')
   );
   downloadCSV(`Ledger_${year}_${ts}.csv`, [headers, ...rows].join('\n'));
@@ -2417,6 +2427,7 @@ function parseLedgerCSV(text) {
       txtype:['txtype','transactiontype','type'],
       groupid:['groupid','group'],
       channel:['channel','saleschannel','sales_channel'],
+      location:['location','loc','salelocation','saleslocation'],
       qty:['qty','quantity','units']
     };
     for (const a of (aliases[k]||[k])) {
@@ -2451,6 +2462,7 @@ function parseLedgerCSV(text) {
       schf: (c[col('schf')]||'').trim(),
       check: (c[col('check')]||'').trim(),
       channel: (c[col('channel')]||'').trim(),
+      location: (c[col('location')]||'').trim(),
       qty: qtyVal
     });
   }
@@ -3736,6 +3748,7 @@ function importMarketCSV(input) {
 // LOCATIONS AND TAX
 // =====================================================
 
+let _editingLocIdx = -1;
 function renderLocationSettings() {
   const list = document.getElementById('locations-list');
   if (!list) return;
@@ -3743,12 +3756,71 @@ function renderLocationSettings() {
     list.innerHTML = '<p style="font-size:0.82rem;color:var(--text-muted)">No locations defined.</p>';
     return;
   }
-  list.innerHTML = saleLocations.map((l, i) => `
-    <div style="display:flex;align-items:center;gap:12px;padding:6px 0;border-bottom:1px solid var(--cream-dark)">
+  list.innerHTML = saleLocations.map((l, i) => {
+    if (i === _editingLocIdx) {
+      return `<div style="display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid var(--cream-dark);flex-wrap:wrap">
+        <input type="text" id="edit-loc-name-${i}" value="${esc(l.name)}" aria-label="Location name" style="flex:1;min-width:130px;font-family:'Lato',sans-serif;font-size:0.88rem;padding:5px 8px;border:1px solid var(--border);border-radius:4px">
+        <input type="number" id="edit-loc-rate-${i}" value="${l.rate}" step="0.01" min="0" aria-label="Tax rate percent" style="width:88px;font-family:'Lato',sans-serif;font-size:0.88rem;padding:5px 8px;border:1px solid var(--border);border-radius:4px">
+        <span style="font-size:0.82rem;color:var(--text-muted)">%</span>
+        <button class="btn btn-primary btn-sm" onclick="saveLocationEdit(${i})">Save</button>
+        <button class="btn btn-secondary btn-sm" onclick="cancelLocationEdit()">Cancel</button>
+      </div>`;
+    }
+    return `<div style="display:flex;align-items:center;gap:12px;padding:6px 0;border-bottom:1px solid var(--cream-dark)">
       <span style="font-size:0.88rem;flex:1"><strong>${esc(l.name)}</strong></span>
       <span style="font-size:0.82rem;color:var(--text-muted)">${l.rate}%</span>
+      <button class="btn btn-secondary btn-sm" onclick="editLocation(${i})">Edit</button>
       ${i >= 2 ? `<button class="btn btn-danger btn-sm" onclick="removeLocation(${i})">Remove</button>` : '<span style="width:64px"></span>'}
-    </div>`).join('');
+    </div>`;
+  }).join('');
+}
+
+function editLocation(i) { _editingLocIdx = i; renderLocationSettings(); }
+function cancelLocationEdit() { _editingLocIdx = -1; renderLocationSettings(); }
+
+function saveLocationEdit(i) {
+  const l = saleLocations[i];
+  if (!l) return;
+  const newName = (document.getElementById('edit-loc-name-' + i).value || '').trim();
+  const newRate = parseFloat(document.getElementById('edit-loc-rate-' + i).value);
+  if (!newName || isNaN(newRate) || newRate < 0) { alert('Location name and a valid rate are required.'); return; }
+  if (saleLocations.some((o, j) => j !== i && o.name.toLowerCase() === newName.toLowerCase())) { alert('Another location already has that name.'); return; }
+  const oldName = l.name;
+  // Renaming a location must relabel every historical transaction/invoice that
+  // references it (and the "| Name" token in retail-tax notes) so the ledger and
+  // reports stay consistent. Changing the rate only affects future entries --
+  // historical amounts are never recomputed.
+  if (newName !== oldName) applyLocationRename(oldName, newName);
+  l.name = newName;
+  l.rate = newRate;
+  _editingLocIdx = -1;
+  saveToStorage();
+  renderLocationSettings();
+  onTxTypeChange();
+  refreshInvLocationSelect();
+  renderLedgerFull(); updateLedgerTiles(); renderDashboard();
+  showToast('Location updated.');
+}
+
+// Relabel a location everywhere it is stored: the location field on transactions
+// and invoices, plus the trailing "| <name>" token in retail-tax notes. Amounts
+// are never touched. Returns counts. Shared by the Settings editor and the V3.4
+// migration so both rename consistently.
+function applyLocationRename(oldName, newName) {
+  let rows = 0, notesN = 0;
+  const esc = oldName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const tokRe = new RegExp('\\|\\s*' + esc + '(?=\\s*$|\\s*\\|)', 'g');
+  transactions.forEach(t => {
+    if ((t.location || '').trim() === oldName) { t.location = newName; rows++; }
+    if (t.notes && tokRe.test(t.notes)) {
+      tokRe.lastIndex = 0;
+      t.notes = t.notes.replace(tokRe, '| ' + newName);
+      notesN++;
+    }
+    tokRe.lastIndex = 0;
+  });
+  invoices.forEach(inv => { if ((inv.location || '').trim() === oldName) inv.location = newName; });
+  return { rows, notesN };
 }
 
 function addLocation() {
@@ -4144,12 +4216,17 @@ function markInvoicePaid(id) {
   inv.status = 'Paid';
   inv.paidDate = todayStr();
   const grp = nextId();
-  const post = [{ cat: inv.cat, cls: 'Revenue', amt: inv.subtotal }];
-  if (inv.tax > 0) post.push({ cat: 'Retail Tax', cls: 'Liability', amt: inv.tax, notes: `Retail tax | invoice ${inv.invNum} | ${inv.location}` });
+  // Carry the invoice's tax location onto the revenue and tax legs so the
+  // Retail Tax Remittance worksheet buckets invoiced sales under the right
+  // location instead of "Unspecified". The Checking leg stays location-less,
+  // matching the manual Cash Sale / Deposit convention.
+  const loc = inv.location || '';
+  const post = [{ cat: inv.cat, cls: 'Revenue', amt: inv.subtotal, loc }];
+  if (inv.tax > 0) post.push({ cat: 'Retail Tax', cls: 'Liability', amt: inv.tax, loc, notes: `Retail tax | invoice ${inv.invNum} | ${inv.location}` });
   post.push({ cat: 'Cash - Checking', cls: 'Asset', amt: inv.total, notes: `Deposit | invoice ${inv.invNum} paid` });
   post.forEach((p, i) => transactions.push({
     id: nextId(), groupId: grp, txType: 'Invoice Payment', date: inv.paidDate,
-    desc: inv.customer, cat: p.cat, cls: p.cls, amount: p.amt, schf: '', check: '',
+    desc: inv.customer, cat: p.cat, cls: p.cls, amount: p.amt, location: p.loc || '', schf: '', check: '',
     notes: p.notes || `Invoice ${inv.invNum} paid`
   }));
   inv.grpPaid = grp;
@@ -4608,12 +4685,12 @@ function buildLocationIndex(txList) {
 function resolveLocation(t, locIndex) {
   if (t.location && t.location.trim()) return t.location.trim();
   if (t.groupId && locIndex[t.groupId]) return locIndex[t.groupId];
-  // Legacy keyword inference
-  const s = (t.desc + ' ' + (t.notes || '')).toLowerCase();
-  if (/\bu-?pick\b/.test(s) || s.includes('upick')) return 'U-Pick';
-  if (/\b(market|frankfort)\b/.test(s)) return 'Frankfort';
-  if (/\b(online|applepay|website)\b/.test(s)) return 'Home';
-  if (/\bhome\b/.test(s)) return 'Home';
+  // No location on this row or any sibling leg in its group. Older builds
+  // guessed one from keywords in the description/notes, which conflated sales
+  // *channel* (e.g. U-Pick) with tax *location* and invented buckets that were
+  // never real jurisdictions. Every revenue row now carries a real location
+  // (see runMigration_v3_4), so that guessing is retired: an unlabeled row
+  // honestly reports as Unspecified rather than being mis-bucketed.
   return 'Unspecified';
 }
 
@@ -4925,6 +5002,107 @@ function migrateToV3_2() {
     renderLedgerFull(); updateLedgerTiles(); renderDashboard();
   }
   console.log('V3.2 auto-migration (Schedule F on Revenue cleanup):', result);
+}
+
+// =====================================================
+// V3.3 DATA MIGRATION: backfill sale location onto already-paid invoice legs
+// Invoice payments used to post their Revenue and Retail Tax legs with no
+// location field, so invoiced sales landed under "Unspecified" on the Retail
+// Tax Remittance worksheet. Stamp each paid invoice's tax location onto its
+// posted legs (found via inv.grpPaid). Amounts are never touched; only an
+// empty location is filled, so re-running is idempotent.
+// =====================================================
+function runMigration_v3_3() {
+  let legsStamped = 0, invoicesTouched = 0;
+  invoices.forEach(inv => {
+    const loc = (inv.location || '').trim();
+    if (!inv.grpPaid || !loc) return;
+    let touched = false;
+    transactions.forEach(t => {
+      if (t.groupId !== inv.grpPaid) return;
+      if (t.cls !== 'Revenue' && t.cat !== 'Retail Tax') return;
+      if (t.location && t.location.trim()) return; // already set -- leave as is
+      t.location = loc;
+      legsStamped++;
+      touched = true;
+    });
+    if (touched) invoicesTouched++;
+  });
+  return { legsStamped, invoicesTouched };
+}
+
+function migrateToV3_3() {
+  if (localStorage.getItem('sff_v3_3_migrated') === '1') return;
+  const result = runMigration_v3_3();
+  localStorage.setItem('sff_v3_3_migrated', '1');
+  if (result.legsStamped > 0) {
+    saveToStorage();
+    renderLedgerFull(); updateLedgerTiles(); renderDashboard();
+  }
+  console.log('V3.3 auto-migration (invoice payment location backfill):', result);
+}
+
+// =====================================================
+// V3.4 DATA MIGRATION: real sale locations for every revenue row
+// (1) Rename the two locations to their true jurisdictions.
+// (2) Backfill location from the sales channel on revenue rows that never got
+//     one (channel was recorded even when location was not), so the Retail Tax
+//     Remittance worksheet stops bucketing them as "Unspecified".
+// (3) Stamp the paired Retail Tax legs (which carry no channel) with their
+//     group's location so tax-by-location agrees with gross receipts.
+// Amounts are never changed. Only empty locations are filled, so re-running is
+// idempotent. The channel->location map reflects this farm's own history:
+// Home / Online / U-Pick sold from the farm (Will County); Farmers Market /
+// Show sold in the Village of Frankfort.
+// =====================================================
+function runMigration_v3_4() {
+  const RENAMES = [['Home', 'Will County'], ['Frankfort', 'Village of Frankfort']];
+  const CHANNEL_LOC = {
+    'Home': 'Will County',
+    'Online': 'Will County',
+    'U-Pick': 'Will County',
+    'Farmers Market / Show': 'Village of Frankfort'
+  };
+  let defsRenamed = 0, valuesRenamed = 0, notesRenamed = 0, backfilled = 0, taxLegsStamped = 0;
+
+  // (1) Rename the location definitions
+  RENAMES.forEach(([oldN, newN]) => {
+    saleLocations.forEach(l => { if (l.name === oldN) { l.name = newN; defsRenamed++; } });
+  });
+  // (2) Rename existing location values + note tokens everywhere
+  RENAMES.forEach(([oldN, newN]) => {
+    const r = applyLocationRename(oldN, newN);
+    valuesRenamed += r.rows; notesRenamed += r.notesN;
+  });
+  // (3) Backfill location from channel on revenue rows still missing one
+  transactions.forEach(t => {
+    const isRev = t.cls === 'Revenue' && (t.cat === 'Sales of Produce' || t.cat === 'Admission Revenue');
+    if (!isRev || (t.location || '').trim()) return;
+    const dest = CHANNEL_LOC[(t.channel || '').trim()];
+    if (dest) { t.location = dest; backfilled++; }
+  });
+  // (4) Stamp Retail Tax legs from their group's (now located) revenue leg
+  const groupLoc = {};
+  transactions.forEach(t => { if (t.groupId && (t.location || '').trim()) groupLoc[t.groupId] = t.location.trim(); });
+  transactions.forEach(t => {
+    if (t.cat === 'Retail Tax' && !(t.location || '').trim() && t.groupId && groupLoc[t.groupId]) {
+      t.location = groupLoc[t.groupId]; taxLegsStamped++;
+    }
+  });
+  return { defsRenamed, valuesRenamed, notesRenamed, backfilled, taxLegsStamped };
+}
+
+function migrateToV3_4() {
+  if (localStorage.getItem('sff_v3_4_migrated') === '1') return;
+  const result = runMigration_v3_4();
+  localStorage.setItem('sff_v3_4_migrated', '1');
+  const changed = result.defsRenamed + result.valuesRenamed + result.notesRenamed + result.backfilled + result.taxLegsStamped;
+  if (changed > 0) {
+    saveToStorage();
+    renderLedgerFull(); updateLedgerTiles(); renderDashboard(); renderLocationSettings();
+    onTxTypeChange(); refreshInvLocationSelect();
+  }
+  console.log('V3.4 auto-migration (location backfill + rename):', result);
 }
 
 function runMigrationManually() {
