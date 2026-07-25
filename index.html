@@ -1129,12 +1129,14 @@ const TX_TYPES = {
       const isAdmission = cat === 'Admission Revenue';
       if (!isAdmission && loc && loc.rate > 0) {
         const rate = loc.rate / 100;
-        const preTax = amt / (1 + rate);
-        const tax = amt - preTax;
+        // Round tax to cents, derive revenue as the remainder so the group balances exactly.
+        const gross = +amt.toFixed(2);
+        const tax = +(gross * rate / (1 + rate)).toFixed(2);
+        const preTax = +(gross - tax).toFixed(2);
         return [
           { cat, cls: 'Revenue', amt: preTax },
           { cat: 'Retail Tax', cls: 'Liability', amt: tax, notes: `Retail tax ${loc.rate}% | ${location}` },
-          { cat: 'Cash - Checking', cls: 'Asset', amt: amt }
+          { cat: 'Cash - Checking', cls: 'Asset', amt: gross }
         ];
       }
       return [
@@ -2083,7 +2085,7 @@ function saveSplitDeposit() {
   const rows = [];
   document.querySelectorAll('.sd-row').forEach(row => {
     const locName = row.querySelector('.sd-loc').value;
-    const amt = parseFloat(row.querySelector('.sd-amt').value) || 0;
+    const amt = +((parseFloat(row.querySelector('.sd-amt').value) || 0).toFixed(2));
     const revType = row.querySelector('.sd-revtype').value;
     const channel = row.querySelector('.sd-channel').value || '';
     if (amt > 0) rows.push({ locName, amt, revType, channel });
@@ -2093,7 +2095,7 @@ function saveSplitDeposit() {
 
   // All rows share one Checking leg so the bank statement sees a single deposit entry
   const masterGroupId = nextId();
-  const checkingTotal = rows.reduce((s, r) => s + r.amt, 0);
+  const checkingTotal = +(rows.reduce((s, r) => s + r.amt, 0)).toFixed(2);
 
   rows.forEach(({ locName, amt, revType, channel }) => {
     const loc = saleLocations.find(l => l.name === locName);
@@ -2101,8 +2103,9 @@ function saveSplitDeposit() {
 
     if (!isAdmission && loc && loc.rate > 0) {
       const rate = loc.rate / 100;
-      const preTax = amt / (1 + rate);
-      const tax = amt - preTax;
+      // Round tax to cents, derive revenue as the remainder so the group balances exactly.
+      const tax = +(amt * rate / (1 + rate)).toFixed(2);
+      const preTax = +(amt - tax).toFixed(2);
       transactions.push(
         { id: nextId(), groupId: masterGroupId, txType: 'Cash Sale / Deposit', date, desc: locName + ' deposit', cat: revType, cls: 'Revenue', amount: preTax, location: locName, channel, schf: '', check: '', notes: notes || ('Split deposit | ' + locName) },
         { id: nextId(), groupId: masterGroupId, txType: 'Cash Sale / Deposit', date, desc: locName + ' deposit', cat: 'Retail Tax', cls: 'Liability', amount: tax, location: locName, channel: '', schf: '', check: '', notes: 'Retail tax ' + loc.rate + '% | ' + locName }
