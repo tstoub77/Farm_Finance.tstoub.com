@@ -4431,6 +4431,8 @@ function printInvoice(id) {
     <div class="doc-sheet">
       <div class="doc-head">
         <div>${brandBlock()}<div style="font-size:0.78rem;color:var(--text-muted);margin-top:8px;line-height:1.5">${esc(getFarmCityState())}${getFarmWebsite() ? '<br>' + esc(getFarmWebsite()) : ''}</div></div>
+        <div class="doc-meta">
+          <div class="doc-title">Invoice</div>
           <div><strong>${esc(inv.invNum)}</strong></div>
           <div>Date: ${fmtDate(inv.date)}</div>
           <div>Due: ${fmtDate(inv.due)} (${termLabel(inv.terms)})</div>
@@ -4462,6 +4464,8 @@ function printPO(id) {
     <div class="doc-sheet">
       <div class="doc-head">
         <div>${brandBlock()}<div style="font-size:0.78rem;color:var(--text-muted);margin-top:8px;line-height:1.5">${esc(getFarmCityState())}${getFarmWebsite() ? '<br>' + esc(getFarmWebsite()) : ''}</div></div>
+        <div class="doc-meta">
+          <div class="doc-title">Purchase Order</div>
           <div><strong>${esc(po.poNum)}</strong></div>
           <div>Date: ${fmtDate(po.date)}</div>
           <div>Status: ${po.status}</div>
