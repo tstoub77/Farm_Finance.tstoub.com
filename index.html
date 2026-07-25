@@ -1539,13 +1539,13 @@ function importFarmBackup(input) {
   el.classList.remove('import-error');
   if (!file) return;
   const reader = new FileReader();
-  reader.onload = function(e) {
+  reader.onload = async function(e) {
     try {
       const data = JSON.parse(e.target.result);
       if (!data.version || !Array.isArray(data.transactions)) {
         throw new Error('This does not appear to be a valid farm backup file.');
       }
-      if (!confirm('This will replace ALL current farm data with the backup. This cannot be undone. Continue?')) {
+      if (!(await showConfirm('This will replace ALL current farm data with the backup. This cannot be undone.', { title: 'Restore backup?', confirmLabel: 'Replace all data' }))) {
         input.value = '';
         return;
       }
@@ -1768,7 +1768,7 @@ function calcInvUsedAmount() {
 // =====================================================
 // ADD TRANSACTION
 // =====================================================
-function addTransaction() {
+async function addTransaction() {
   const type = document.getElementById('tx-type').value;
   const date = document.getElementById('tx-date').value;
   const desc = document.getElementById('tx-desc').value.trim();
@@ -1784,10 +1784,10 @@ function addTransaction() {
   const qty = (!isNaN(qtyRaw) && qtyRaw > 0) ? qtyRaw : undefined;
 
   if (!date || !desc || isNaN(rawAmt) || rawAmt <= 0) {
-    alert('Date, Vendor/Description, and a positive Amount are required.');
+    showToast('Date, Vendor/Description, and a positive Amount are required.', 'error');
     return;
   }
-  if (rawAmt >= 10000 && !confirm(`Amount is $${rawAmt.toLocaleString()}. Is that correct?`)) return;
+  if (rawAmt >= 10000 && !(await showConfirm(`Amount is $${rawAmt.toLocaleString()}. Is that correct?`, { title: 'Large amount', confirmLabel: 'Yes, continue', danger: false }))) return;
 
   const def = TX_TYPES[type];
   const postings = def.postings(rawAmt, cat, location);
@@ -1834,18 +1834,18 @@ function addTransaction() {
   updatePOTiles();
 }
 
-function deleteTransactionGroup(groupId) {
+async function deleteTransactionGroup(groupId) {
   // PO-posted entries must be reversed through the Purchasing tab so the PO
   // status, inventory value, and payable stay in sync. Deleting them here
   // would leave the PO marked Received or Paid with no ledger entries behind it.
   const linkedPO = purchaseOrders.find(p => p.grpReceived === groupId || p.grpPaid === groupId);
   if (linkedPO) {
-    alert('These entries were posted by purchase order ' + linkedPO.poNum + '. Use Reopen or Delete on that PO in the Purchasing tab so its status and inventory value stay in sync.');
+    showToast('These entries were posted by purchase order ' + linkedPO.poNum + '. Use Reopen or Delete on that PO in the Purchasing tab so its status and inventory value stay in sync.', 'error');
     return;
   }
   const first = transactions.find(t => t.groupId === groupId);
   const label = first ? `"${first.desc}" on ${fmtDate(first.date)}` : 'this transaction';
-  if (!confirm(`Delete ${label}? This cannot be undone.`)) return;
+  if (!(await showConfirm(`Delete ${label}? This cannot be undone.`, { title: 'Delete entry?', confirmLabel: 'Delete' }))) return;
   transactions = transactions.filter(t => t.groupId !== groupId);
   markUnsaved();
   renderLedgerFull();
@@ -2080,7 +2080,7 @@ function saveSplitDeposit() {
   const date = document.getElementById('sd-date').value;
   const notes = document.getElementById('sd-notes').value.trim();
 
-  if (!date) { alert('Please enter a deposit date.'); return; }
+  if (!date) { showToast('Please enter a deposit date.', 'error'); return; }
 
   const rows = [];
   document.querySelectorAll('.sd-row').forEach(row => {
@@ -2091,7 +2091,7 @@ function saveSplitDeposit() {
     if (amt > 0) rows.push({ locName, amt, revType, channel });
   });
 
-  if (!rows.length) { alert('Please enter at least one row with an amount.'); return; }
+  if (!rows.length) { showToast('Please enter at least one row with an amount.', 'error'); return; }
 
   // All rows share one Checking leg so the bank statement sees a single deposit entry
   const masterGroupId = nextId();
@@ -2357,9 +2357,9 @@ function importLedgerCSV(input) {
   const file = input.files[0];
   if (!file) return;
   const reader = new FileReader();
-  reader.onload = e => {
+  reader.onload = async e => {
     if (importMode === 'replace' && transactions.length > 0) {
-      if (!confirm('Replace mode will wipe all existing transactions before importing. Continue?')) {
+      if (!(await showConfirm('Replace mode will wipe all existing transactions before importing.', { title: 'Replace transactions?', confirmLabel: 'Wipe & import' }))) {
         input.value = '';
         return;
       }
@@ -2490,7 +2490,7 @@ function addMileage() {
   const vehicles = parseInt(document.getElementById('mi-vehicles').value);
 
   if (!date || !location || isNaN(miles) || miles <= 0) {
-    alert('Date, Location, and Miles are required.');
+    showToast('Date, Location, and Miles are required.', 'error');
     return;
   }
 
@@ -2540,10 +2540,10 @@ function postMileageToLedger(entry) {
   sortTransactions();
 }
 
-function deleteMileage(miId) {
+async function deleteMileage(miId) {
   const trip = mileageLog.find(m => m.miId === miId);
   const label = trip ? `${fmtDate(trip.date)} to ${trip.location}` : 'this trip';
-  if (!confirm(`Delete mileage entry for ${label}? This cannot be undone.`)) return;
+  if (!(await showConfirm(`Delete mileage entry for ${label}? This cannot be undone.`, { title: 'Delete mileage?', confirmLabel: 'Delete' }))) return;
   mileageLog = mileageLog.filter(m => m.miId !== miId);
   transactions = transactions.filter(t => t.miId !== miId);
   markUnsaved();
@@ -2616,9 +2616,9 @@ function importMileageCSV(input) {
   const file = input.files[0];
   if (!file) return;
   const reader = new FileReader();
-  reader.onload = e => {
+  reader.onload = async e => {
     if (importMode === 'replace' && mileageLog.length > 0) {
-      if (!confirm('Replace mode will wipe all existing mileage before importing. Continue?')) {
+      if (!(await showConfirm('Replace mode will wipe all existing mileage before importing.', { title: 'Replace mileage?', confirmLabel: 'Wipe & import' }))) {
         input.value = '';
         return;
       }
@@ -2676,7 +2676,7 @@ function importMileageCSV(input) {
 function generateReport() {
   const period = document.getElementById('report-period').value;
   const year = parseInt(document.getElementById('report-year').value);
-  if (isNaN(year)) { alert('Please enter a valid year.'); return; }
+  if (isNaN(year)) { showToast('Please enter a valid year.', 'error'); return; }
 
   function inPeriod(d) {
     const dt = new Date(d + 'T00:00:00');
@@ -3454,8 +3454,8 @@ function reconBuildMonthFilter() {
   });
 }
 
-function reconReset() {
-  if (reconBankRows.length && !confirm('Reset reconciliation? This clears all bank data and match state.')) return;
+async function reconReset() {
+  if (reconBankRows.length && !(await showConfirm('Reset reconciliation? This clears all bank data and match state.', { title: 'Reset reconciliation?', confirmLabel: 'Reset' }))) return;
   reconBankRows=[]; reconBookRows=[]; reconSelBank=null; reconSelBooks=[]; _reconGroupMap={};
   reconMapperHeaders=[]; reconMapperRawRows=[]; _reconBookSnapshot=-1;
   document.getElementById('recon-bank-status').textContent='';
@@ -3467,7 +3467,7 @@ function reconReset() {
 }
 
 function printRecon() {
-  if (!reconBankRows.length) { alert('Load a bank statement first.'); return; }
+  if (!reconBankRows.length) { showToast('Load a bank statement first.', 'error'); return; }
   // Remove filters so full data shows
   document.getElementById('recon-filter-status').value = '';
   document.getElementById('recon-filter-month').value = '';
@@ -3514,11 +3514,11 @@ function closeYearEnd() {
   modalClosed('yearend-modal');
 }
 
-function runYearEnd() {
+async function runYearEnd() {
   const yr = parseInt(document.getElementById('yearend-year').value);
-  if (isNaN(yr)) { alert('Please enter a valid year.'); return; }
+  if (isNaN(yr)) { showToast('Please enter a valid year.', 'error'); return; }
   if (transactions.some(t => t.txType === 'Year-End Close' && t.date === `${yr}-12-31`)) {
-    if (!confirm(`A Year-End Close entry already exists for ${yr}. Running it again will create a duplicate. Continue?`)) return;
+    if (!(await showConfirm(`A Year-End Close entry already exists for ${yr}. Running it again will create a duplicate.`, { title: 'Close already exists', confirmLabel: 'Run anyway' }))) return;
   }
   // Exclude prior Year-End Close entries from the net so rolling twice does not compound
   const yearTx = transactions.filter(t => t.date.startsWith(String(yr)) && t.txType !== 'Year-End Close');
@@ -3526,7 +3526,7 @@ function runYearEnd() {
   const allExp = yearTx.filter(t => ['Expense','Other Expense','Contribution Expense'].includes(t.cls)).reduce((s,t) => s+t.amount, 0);
   const net = allRev + allExp;
 
-  if (net === 0) { alert('Net income is zero for ' + yr + '. Nothing to close.'); return; }
+  if (net === 0) { showToast('Net income is zero for ' + yr + '. Nothing to close.', 'error'); return; }
 
   const groupId = nextId();
   // Debit leg: clears the net P&L balance (reverses Revenue net of Expenses into a closing entry)
@@ -3558,7 +3558,7 @@ function runYearEnd() {
   markUnsaved();
   renderLedgerFull();
   updateLedgerTiles();
-  alert(`Year-end close complete for ${yr}. Net income of ${fmtDollar(net)} posted to Retained Earnings.`);
+  showToast(`Year-end close complete for ${yr}. Net income of ${fmtDollar(net)} posted to Retained Earnings.`);
 }
 
 // =====================================================
@@ -3566,29 +3566,29 @@ function runYearEnd() {
 // =====================================================
 function saveMileageRate() {
   const r = parseFloat(document.getElementById('settings-rate').value);
-  if (isNaN(r) || r <= 0) { alert('Please enter a valid rate.'); return; }
+  if (isNaN(r) || r <= 0) { showToast('Please enter a valid rate.', 'error'); return; }
   mileageRate = r;
   saveToStorage();
-  alert('Mileage rate saved: $' + r + '/mile');
+  showToast('Mileage rate saved: $' + r + '/mile');
 }
 
-function clearTransactions() {
-  if (!confirm('Clear all transactions? This cannot be undone.')) return;
+async function clearTransactions() {
+  if (!(await showConfirm('Clear all transactions? This cannot be undone.', { title: 'Clear all transactions?', confirmLabel: 'Clear all' }))) return;
   transactions = [];
   markUnsaved();
   renderLedgerFull();
   updateLedgerTiles();
 }
 
-function clearMileage() {
-  if (!confirm('Clear all mileage? This cannot be undone.')) return;
+async function clearMileage() {
+  if (!(await showConfirm('Clear all mileage? This cannot be undone.', { title: 'Clear all mileage?', confirmLabel: 'Clear all' }))) return;
   mileageLog = [];
   markUnsaved();
   renderMileage();
 }
 
-function clearMarket() {
-  if (!confirm('Clear all market data? This cannot be undone.')) return;
+async function clearMarket() {
+  if (!(await showConfirm('Clear all market data? This cannot be undone.', { title: 'Clear market data?', confirmLabel: 'Clear all' }))) return;
   marketLog = [];
   markUnsaved();
   renderMarket();
@@ -3624,7 +3624,7 @@ function addMarketDay() {
   const cash = parseFloat(document.getElementById('mk-cash').value) || 0;
   const card = parseFloat(document.getElementById('mk-card').value) || 0;
   const notes = document.getElementById('mk-notes').value.trim();
-  if (!date || !location) { alert('Date and Location are required.'); return; }
+  if (!date || !location) { showToast('Date and Location are required.', 'error'); return; }
   marketLog.push({ id: nextId(), date, location, cash, card, notes });
   marketLog.sort((a, b) => a.date.localeCompare(b.date));
   document.getElementById('mk-location').value = '';
@@ -3636,10 +3636,10 @@ function addMarketDay() {
   renderMarket();
 }
 
-function deleteMarketDay(id) {
+async function deleteMarketDay(id) {
   const day = marketLog.find(m => m.id === id);
   const label = day ? `${fmtDate(day.date)} at ${day.location}` : 'this market day';
-  if (!confirm(`Delete market day ${label}? This cannot be undone.`)) return;
+  if (!(await showConfirm(`Delete market day ${label}? This cannot be undone.`, { title: 'Delete market day?', confirmLabel: 'Delete' }))) return;
   marketLog = marketLog.filter(m => m.id !== id);
   markUnsaved();
   renderMarket();
@@ -3786,8 +3786,8 @@ function saveLocationEdit(i) {
   if (!l) return;
   const newName = (document.getElementById('edit-loc-name-' + i).value || '').trim();
   const newRate = parseFloat(document.getElementById('edit-loc-rate-' + i).value);
-  if (!newName || isNaN(newRate) || newRate < 0) { alert('Location name and a valid rate are required.'); return; }
-  if (saleLocations.some((o, j) => j !== i && o.name.toLowerCase() === newName.toLowerCase())) { alert('Another location already has that name.'); return; }
+  if (!newName || isNaN(newRate) || newRate < 0) { showToast('Location name and a valid rate are required.', 'error'); return; }
+  if (saleLocations.some((o, j) => j !== i && o.name.toLowerCase() === newName.toLowerCase())) { showToast('Another location already has that name.', 'error'); return; }
   const oldName = l.name;
   // Renaming a location must relabel every historical transaction/invoice that
   // references it (and the "| Name" token in retail-tax notes) so the ledger and
@@ -3829,8 +3829,8 @@ function applyLocationRename(oldName, newName) {
 function addLocation() {
   const name = document.getElementById('new-loc-name').value.trim();
   const rate = parseFloat(document.getElementById('new-loc-rate').value);
-  if (!name || isNaN(rate) || rate < 0) { alert('Location name and a valid rate are required.'); return; }
-  if (saleLocations.find(l => l.name.toLowerCase() === name.toLowerCase())) { alert('That location already exists.'); return; }
+  if (!name || isNaN(rate) || rate < 0) { showToast('Location name and a valid rate are required.', 'error'); return; }
+  if (saleLocations.find(l => l.name.toLowerCase() === name.toLowerCase())) { showToast('That location already exists.', 'error'); return; }
   saleLocations.push({ name, rate });
   document.getElementById('new-loc-name').value = '';
   document.getElementById('new-loc-rate').value = '';
@@ -3850,9 +3850,9 @@ function refreshInvLocationSelect() {
   if (prev && saleLocations.some(l => l.name === prev)) sel.value = prev;
 }
 
-function removeLocation(idx) {
-  if (idx < 2) { alert('Default locations cannot be removed.'); return; }
-  if (!confirm(`Remove ${saleLocations[idx].name}?`)) return;
+async function removeLocation(idx) {
+  if (idx < 2) { showToast('Default locations cannot be removed.', 'error'); return; }
+  if (!(await showConfirm(`Remove ${saleLocations[idx].name}?`, { title: 'Remove location?', confirmLabel: 'Remove' }))) return;
   saleLocations.splice(idx, 1);
   saveToStorage();
   renderLocationSettings();
@@ -3912,8 +3912,8 @@ function addContact() {
   const addr  = document.getElementById('new-contact-addr').value.trim();
   const email = document.getElementById('new-contact-email').value.trim();
   const terms = document.getElementById('new-contact-terms').value;
-  if (!name) { alert('Contact name is required.'); return; }
-  if (contacts.find(c => c.name.toLowerCase() === name.toLowerCase())) { alert('A contact with that name already exists.'); return; }
+  if (!name) { showToast('Contact name is required.', 'error'); return; }
+  if (contacts.find(c => c.name.toLowerCase() === name.toLowerCase())) { showToast('A contact with that name already exists.', 'error'); return; }
   contacts.push({ name, type, addr, email, terms });
   document.getElementById('new-contact-name').value = '';
   document.getElementById('new-contact-addr').value = '';
@@ -3922,8 +3922,8 @@ function addContact() {
   renderContactSettings();
 }
 
-function removeContact(idx) {
-  if (!confirm(`Remove ${contacts[idx].name}?`)) return;
+async function removeContact(idx) {
+  if (!(await showConfirm(`Remove ${contacts[idx].name}?`, { title: 'Remove contact?', confirmLabel: 'Remove' }))) return;
   contacts.splice(idx, 1);
   saveToStorage();
   renderContactSettings();
@@ -3986,23 +3986,91 @@ function dismissTaxBanner() {
 // =====================================================
 // UTILITIES
 // =====================================================
-// Lightweight non-blocking confirmation toast (bottom-center, auto-dismiss).
-// Used for success messages where a blocking alert() would be intrusive.
+// Lightweight non-blocking toast (bottom-center, auto-dismiss).
+// type 'success' (default, green) for confirmations; 'error' (red) for
+// validation messages that used to be a blocking alert().
 let _toastTimer = null;
-function showToast(msg) {
+function showToast(msg, type = 'success') {
   let el = document.getElementById('app-toast');
   if (!el) {
     el = document.createElement('div');
     el.id = 'app-toast';
     el.setAttribute('role', 'status');
     el.setAttribute('aria-live', 'polite');
-    el.style.cssText = "position:fixed;left:50%;bottom:28px;transform:translateX(-50%);background:var(--green-deep);color:#fdfbf4;font-family:'Lato',sans-serif;font-size:0.85rem;font-weight:700;letter-spacing:0.02em;padding:11px 22px;border-radius:6px;box-shadow:0 6px 20px rgba(0,0,0,0.3);z-index:800;opacity:0;transition:opacity 0.2s;pointer-events:none";
+    el.style.cssText = "position:fixed;left:50%;bottom:28px;transform:translateX(-50%);color:#fdfbf4;font-family:'Lato',sans-serif;font-size:0.85rem;font-weight:700;letter-spacing:0.02em;padding:11px 22px;border-radius:6px;box-shadow:0 6px 20px rgba(0,0,0,0.3);z-index:1000;opacity:0;transition:opacity 0.2s;pointer-events:none;max-width:min(440px,92vw);text-align:center";
     document.body.appendChild(el);
   }
+  el.setAttribute('role', type === 'error' ? 'alert' : 'status');
+  el.style.background = type === 'error' ? 'var(--red)' : 'var(--green-deep)';
   el.textContent = msg;
   requestAnimationFrame(() => { el.style.opacity = '1'; });
   if (_toastTimer) clearTimeout(_toastTimer);
-  _toastTimer = setTimeout(() => { el.style.opacity = '0'; }, 2600);
+  _toastTimer = setTimeout(() => { el.style.opacity = '0'; }, type === 'error' ? 3600 : 2600);
+}
+
+// Promise-based confirmation modal that replaces the blocking confirm().
+// Resolves true if confirmed, false if cancelled/dismissed. Callers await it.
+// opts: { title, confirmLabel, cancelLabel, danger } — danger (default true)
+// styles the confirm button red for destructive actions.
+function showConfirm(message, opts = {}) {
+  return new Promise(resolve => {
+    let overlay = document.getElementById('confirm-modal');
+    if (!overlay) {
+      overlay = document.createElement('div');
+      overlay.id = 'confirm-modal';
+      overlay.className = 'modal-overlay';
+      overlay.style.zIndex = '900';
+      overlay.innerHTML =
+        '<div class="modal-box" style="width:min(460px,92vw)" role="dialog" aria-modal="true" aria-labelledby="confirm-title" aria-describedby="confirm-message">' +
+        '<h2 id="confirm-title"></h2><p id="confirm-message"></p>' +
+        '<div class="modal-actions">' +
+        '<button type="button" class="btn btn-secondary" id="confirm-cancel"></button>' +
+        '<button type="button" class="btn" id="confirm-ok"></button>' +
+        '</div></div>';
+      document.body.appendChild(overlay);
+    }
+    const okBtn = overlay.querySelector('#confirm-ok');
+    const cancelBtn = overlay.querySelector('#confirm-cancel');
+    overlay.querySelector('#confirm-title').textContent = opts.title || 'Please confirm';
+    overlay.querySelector('#confirm-message').textContent = message;
+    okBtn.textContent = opts.confirmLabel || 'Confirm';
+    okBtn.className = 'btn ' + (opts.danger === false ? 'btn-primary' : 'btn-danger');
+    cancelBtn.textContent = opts.cancelLabel || 'Cancel';
+
+    let done = false;
+    const finish = result => {
+      if (done) return;
+      done = true;
+      document.removeEventListener('keydown', onKey, true);
+      okBtn.removeEventListener('click', onOk);
+      cancelBtn.removeEventListener('click', onCancel);
+      overlay.removeEventListener('mousedown', onBackdrop);
+      overlay.classList.remove('open');
+      modalClosed('confirm-modal');
+      resolve(result);
+    };
+    const onOk = () => finish(true);
+    const onCancel = () => finish(false);
+    const onBackdrop = e => { if (e.target === overlay) finish(false); };
+    // Capture phase + stopPropagation so this wins over the global modal
+    // Tab/Escape handler even when a confirm opens on top of another modal.
+    const onKey = e => {
+      if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); finish(false); }
+      else if (e.key === 'Tab') {
+        e.stopPropagation();
+        const first = cancelBtn, last = okBtn;
+        if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+        else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+      }
+    };
+    okBtn.addEventListener('click', onOk);
+    cancelBtn.addEventListener('click', onCancel);
+    overlay.addEventListener('mousedown', onBackdrop);
+    document.addEventListener('keydown', onKey, true);
+    overlay.classList.add('open');
+    modalOpened('confirm-modal');
+    okBtn.focus();
+  });
 }
 
 function esc(str) {
@@ -4151,9 +4219,9 @@ function previewNextInvoiceNum() {
 }
 function saveInvoice(status) {
   const customer = document.getElementById('inv-customer').value.trim();
-  if (!customer) { alert('Customer / Bill To is required.'); return; }
+  if (!customer) { showToast('Customer / Bill To is required.', 'error'); return; }
   const lines = readLines('inv-lines');
-  if (!lines.length) { alert('Add at least one line item.'); return; }
+  if (!lines.length) { showToast('Add at least one line item.', 'error'); return; }
   const calc = invRecalc();
   const date = document.getElementById('inv-date').value;
   const rec = {
@@ -4186,7 +4254,7 @@ function saveInvoice(status) {
 function editInvoice(id) {
   const inv = invoices.find(i => i.id === id);
   if (!inv) return;
-  if (inv.status === 'Paid') { alert('This invoice is paid. Reopen it (Unpay) before editing.'); return; }
+  if (inv.status === 'Paid') { showToast('This invoice is paid. Reopen it (Unpay) before editing.', 'error'); return; }
   editingInvoiceId = id;
   document.getElementById('inv-form-title').textContent = 'Editing Invoice ' + inv.invNum;
   document.getElementById('inv-edit-note').textContent = 'Editing ' + inv.invNum;
@@ -4245,19 +4313,19 @@ function unpayInvoice(id) {
   markUnsaved();
   renderInvoices(); renderLedgerFull(); updateLedgerTiles();
 }
-function voidInvoice(id) {
+async function voidInvoice(id) {
   const inv = invoices.find(i => i.id === id);
   if (!inv) return;
-  if (!confirm('Void invoice ' + inv.invNum + '?')) return;
+  if (!(await showConfirm('Void invoice ' + inv.invNum + '?', { title: 'Void invoice?', confirmLabel: 'Void' }))) return;
   if (inv.grpPaid) transactions = transactions.filter(t => t.groupId !== inv.grpPaid);
   inv.grpPaid = null; inv.status = 'Void';
   markUnsaved();
   renderInvoices(); renderLedgerFull(); updateLedgerTiles();
 }
-function deleteInvoice(id) {
+async function deleteInvoice(id) {
   const inv = invoices.find(i => i.id === id);
   if (!inv) return;
-  if (!confirm('Delete invoice ' + inv.invNum + '? This cannot be undone.')) return;
+  if (!(await showConfirm('Delete invoice ' + inv.invNum + '? This cannot be undone.', { title: 'Delete invoice?', confirmLabel: 'Delete' }))) return;
   if (inv.grpPaid) transactions = transactions.filter(t => t.groupId !== inv.grpPaid);
   invoices = invoices.filter(i => i.id !== id);
   markUnsaved();
@@ -4335,9 +4403,9 @@ function resetPOForm() {
 }
 function savePO() {
   const vendor = document.getElementById('po-vendor').value.trim();
-  if (!vendor) { alert('Vendor is required.'); return; }
+  if (!vendor) { showToast('Vendor is required.', 'error'); return; }
   const lines = readLines('po-lines');
-  if (!lines.length) { alert('Add at least one line item.'); return; }
+  if (!lines.length) { showToast('Add at least one line item.', 'error'); return; }
   const total = poRecalc();
   const rec = {
     vendor,
@@ -4350,7 +4418,7 @@ function savePO() {
   };
   if (editingPOId) {
     const po = purchaseOrders.find(p => p.id === editingPOId);
-    if (po.status !== 'Open') { alert('Only Open POs can be edited.'); return; }
+    if (po.status !== 'Open') { showToast('Only Open POs can be edited.', 'error'); return; }
     Object.assign(po, rec);
   } else {
     poCounter += 1;
@@ -4369,7 +4437,7 @@ function poTotal(po) { return +po.lines.reduce((s, l) => s + l.qty * l.price, 0)
 function editPO(id) {
   const po = purchaseOrders.find(p => p.id === id);
   if (!po) return;
-  if (po.status !== 'Open') { alert('Only Open POs can be edited. Reopen it first.'); return; }
+  if (po.status !== 'Open') { showToast('Only Open POs can be edited. Reopen it first.', 'error'); return; }
   editingPOId = id;
   document.getElementById('po-form-title').textContent = 'Editing ' + po.poNum;
   document.getElementById('po-edit-note').textContent = 'Editing ' + po.poNum;
@@ -4436,10 +4504,10 @@ function poPay(id) {
   markUnsaved();
   renderPOs(); renderLedgerFull(); updateLedgerTiles();
 }
-function poReopen(id) {
+async function poReopen(id) {
   const po = purchaseOrders.find(p => p.id === id);
   if (!po) return;
-  if (!confirm('Reopen ' + po.poNum + '? This removes any inventory, payable, and payment entries it posted.')) return;
+  if (!(await showConfirm('Reopen ' + po.poNum + '? This removes any inventory, payable, and payment entries it posted.', { title: 'Reopen PO?', confirmLabel: 'Reopen' }))) return;
   if (po.grpReceived) transactions = transactions.filter(t => t.groupId !== po.grpReceived);
   if (po.grpPaid) transactions = transactions.filter(t => t.groupId !== po.grpPaid);
   po.grpReceived = null; po.grpPaid = null;
@@ -4448,10 +4516,10 @@ function poReopen(id) {
   markUnsaved();
   renderPOs(); renderLedgerFull(); updateLedgerTiles();
 }
-function deletePO(id) {
+async function deletePO(id) {
   const po = purchaseOrders.find(p => p.id === id);
   if (!po) return;
-  if (!confirm('Delete ' + po.poNum + '? This removes any ledger entries it posted.')) return;
+  if (!(await showConfirm('Delete ' + po.poNum + '? This removes any ledger entries it posted.', { title: 'Delete PO?', confirmLabel: 'Delete' }))) return;
   if (po.grpReceived) transactions = transactions.filter(t => t.groupId !== po.grpReceived);
   if (po.grpPaid) transactions = transactions.filter(t => t.groupId !== po.grpPaid);
   purchaseOrders = purchaseOrders.filter(p => p.id !== id);
