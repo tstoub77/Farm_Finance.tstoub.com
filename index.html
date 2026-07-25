@@ -5,7 +5,6 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>My Farm | Finance Records </title>
 <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='10' fill='%2333523a'/%3E%3Ctext x='50%25' y='36' text-anchor='middle' font-family='Georgia%2C serif' font-size='18' font-weight='700' fill='%23b89254' dominant-baseline='middle'%3EFarm%3C/text%3E%3Ctext x='50%25' y='52' text-anchor='middle' font-family='Georgia%2C serif' font-size='16' font-weight='700' fill='%23b89254' dominant-baseline='middle'%3E%24%3C/text%3E%3C/svg%3E">
-<link rel="apple-touch-icon" href="data:image/png;base64,...">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:ital,wght@0,400;0,600;0,700;1,400;1,600&family=Lato:wght@400;700&display=swap" rel="stylesheet">
@@ -3912,6 +3911,25 @@ function dismissTaxBanner() {
 // =====================================================
 // UTILITIES
 // =====================================================
+// Lightweight non-blocking confirmation toast (bottom-center, auto-dismiss).
+// Used for success messages where a blocking alert() would be intrusive.
+let _toastTimer = null;
+function showToast(msg) {
+  let el = document.getElementById('app-toast');
+  if (!el) {
+    el = document.createElement('div');
+    el.id = 'app-toast';
+    el.setAttribute('role', 'status');
+    el.setAttribute('aria-live', 'polite');
+    el.style.cssText = "position:fixed;left:50%;bottom:28px;transform:translateX(-50%);background:var(--green-deep);color:#fdfbf4;font-family:'Lato',sans-serif;font-size:0.85rem;font-weight:700;letter-spacing:0.02em;padding:11px 22px;border-radius:6px;box-shadow:0 6px 20px rgba(0,0,0,0.3);z-index:800;opacity:0;transition:opacity 0.2s;pointer-events:none";
+    document.body.appendChild(el);
+  }
+  el.textContent = msg;
+  requestAnimationFrame(() => { el.style.opacity = '1'; });
+  if (_toastTimer) clearTimeout(_toastTimer);
+  _toastTimer = setTimeout(() => { el.style.opacity = '0'; }, 2600);
+}
+
 function esc(str) {
   if (!str) return '';
   return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
