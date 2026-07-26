@@ -1,4 +1,9 @@
 .claude/settings.local.json
 
-# Farm data backups / exports contain real financial data -- never commit
+# Farm data backups / exports / bank statements contain real financial data -- never commit
 FarmBackup_*.json
+Ledger_*.csv
+Mileage_*.csv
+Market_*.csv
+Chase*.csv
+*_Activity_*.csv
