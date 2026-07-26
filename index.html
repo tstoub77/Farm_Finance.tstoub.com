@@ -8,6 +8,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:ital,wght@0,400;0,600;0,700;1,400;1,600&family=Lato:wght@400;700&display=swap" rel="stylesheet">
+<script src="https://accounts.google.com/gsi/client" async defer></script>
 <style>
 :root {
   /* Screen palette: lighter, calmer farm tones */
@@ -900,6 +901,19 @@ tbody td { padding: 8px 12px; color: var(--text); vertical-align: middle; }
       <div class="import-summary" id="backup-import-summary"></div>
     </div>
     <div class="settings-section">
+      <h3>Google Drive Sync</h3>
+      <p style="font-size:0.82rem;color:var(--text-muted);margin-bottom:12px">Sync all farm data across your devices through the private, app-only folder of your own Google Drive. Each device loads the latest data automatically when you open the app; click <strong>Save to Drive</strong> to push this device's changes up. Your data stays in your Google account — it is never sent anywhere else.</p>
+      <div class="settings-row">
+        <button class="btn btn-primary" id="gdrive-connect-btn" onclick="gdriveConnect()">Connect Google Drive</button>
+        <span id="gdrive-actions" style="display:none">
+          <button class="btn btn-primary" onclick="gdrivePush()">Save to Drive</button>
+          <button class="btn btn-secondary" onclick="gdrivePull(false)">Sync now</button>
+          <button class="btn btn-secondary" onclick="gdriveDisconnect()">Disconnect</button>
+        </span>
+      </div>
+      <p id="gdrive-status" style="font-size:0.8rem;color:var(--text-muted);margin-top:8px">Not connected.</p>
+    </div>
+    <div class="settings-section">
       <h3>Mileage Rate</h3>
       <div class="settings-row">
         <div class="form-group" style="max-width:160px">
@@ -1375,6 +1389,7 @@ function init() {
   loadFarmIdentityFields();
   document.getElementById('about-app-version').textContent = 'v' + APP_VERSION;
   document.getElementById('about-backup-version').textContent = BACKUP_SCHEMA_VERSION;
+  gdriveInitOnLoad();
 }
 
 function todayStr() {
@@ -1530,9 +1545,9 @@ function loadFromStorage() {
 // =====================================================
 // FARM BACKUP / RESTORE
 // =====================================================
-function exportFarmBackup() {
+function buildBackupPayload() {
   const now = new Date();
-  const payload = {
+  return {
     version: BACKUP_SCHEMA_VERSION,
     exportedAt: now.toLocaleString('en-US', { year:'numeric', month:'2-digit', day:'2-digit', hour:'2-digit', minute:'2-digit', second:'2-digit', hour12: false }),
     transactions,
@@ -1548,6 +1563,11 @@ function exportFarmBackup() {
     dismissedTaxQuarters,
     farmIdentity: getFarmIdentity(),
   };
+}
+
+function exportFarmBackup() {
+  const now = new Date();
+  const payload = buildBackupPayload();
   const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
@@ -1577,64 +1597,7 @@ function importFarmBackup(input) {
         input.value = '';
         return;
       }
-      transactions         = data.transactions        || [];
-      mileageLog           = data.mileageLog          || [];
-      marketLog            = data.marketLog           || [];
-      invoices             = data.invoices            || [];
-      purchaseOrders       = data.purchaseOrders      || [];
-      invoiceCounters      = data.invoiceCounters     || {};
-      // Derive poCounter from actual PO data to prevent duplicate numbers after partial-year backups
-      if (purchaseOrders.length) {
-        const maxNum = purchaseOrders.reduce((mx, p) => {
-          const n = parseInt((p.poNum || '').replace(/\D/g, '')) || 0;
-          return Math.max(mx, n);
-        }, 0);
-        poCounter = Math.max(data.poCounter || 0, maxNum);
-      } else {
-        poCounter = data.poCounter || 0;
-      }
-      mileageRate          = data.mileageRate         || 0.725;
-      saleLocations        = data.saleLocations && data.saleLocations.length ? data.saleLocations : saleLocations;
-      dismissedTaxQuarters = data.dismissedTaxQuarters || [];
-      contacts             = Array.isArray(data.contacts) ? data.contacts : [];
-      if (data.farmIdentity && typeof data.farmIdentity === 'object') {
-        localStorage.setItem('sff_farm_identity', JSON.stringify(data.farmIdentity));
-      }
-      // If restoring a V2 backup, clear the migration flag so it runs again
-      if ((data.version || 2) < 3) {
-        localStorage.removeItem('sff_v3_migrated');
-      }
-      // Only re-run V3.1 orphan repair if backup predates V4 (V4 guarantees clean data)
-      if ((data.version || 2) < 4) {
-        localStorage.removeItem('sff_v3_1_migrated');
-      }
-      // Always re-check imported data for stray Schedule F codes on revenue,
-      // regardless of backup version -- the source bug predates version tracking.
-      localStorage.removeItem('sff_v3_2_migrated');
-      // Always re-run the invoice-payment location backfill on restore -- older
-      // backups posted invoice payments before locations were stamped on legs.
-      localStorage.removeItem('sff_v3_3_migrated');
-      // Always re-run the location backfill/rename on restore so an older backup
-      // that predates real jurisdictions gets its locations filled and renamed.
-      localStorage.removeItem('sff_v3_4_migrated');
-      saveToStorage();
-      migrateToV3();
-      migrateToV3_1();
-      migrateToV3_2();
-      migrateToV3_3();
-      migrateToV3_4();
-      renderLedgerFull();
-      renderMileage();
-      renderMarket();
-      renderInvoices();
-      renderPOs();
-      updateLedgerTiles();
-      renderDashboard();
-      renderLocationSettings();
-      renderContactSettings();
-      checkTaxBanner();
-      applyFarmIdentityToUI();
-      loadFarmIdentityFields();
+      applyBackupPayload(data);
       el.textContent = 'Farm backup restored: ' + transactions.length + ' transactions, ' + invoices.length + ' invoices, ' + purchaseOrders.length + ' purchase orders, ' + mileageLog.length + ' mileage entries.';
       el.style.display = 'block';
     } catch(err) {
@@ -1645,6 +1608,344 @@ function importFarmBackup(input) {
     input.value = '';
   };
   reader.readAsText(file);
+}
+
+// Apply a decoded backup payload to app state: assigns data, resets the
+// migration flags exactly as a file-restore would, persists, migrates, and
+// re-renders every view. Shared by importFarmBackup() and Google Drive pull.
+function applyBackupPayload(data) {
+  transactions         = data.transactions        || [];
+  mileageLog           = data.mileageLog          || [];
+  marketLog            = data.marketLog           || [];
+  invoices             = data.invoices            || [];
+  purchaseOrders       = data.purchaseOrders      || [];
+  invoiceCounters      = data.invoiceCounters     || {};
+  // Derive poCounter from actual PO data to prevent duplicate numbers after partial-year backups
+  if (purchaseOrders.length) {
+    const maxNum = purchaseOrders.reduce((mx, p) => {
+      const n = parseInt((p.poNum || '').replace(/\D/g, '')) || 0;
+      return Math.max(mx, n);
+    }, 0);
+    poCounter = Math.max(data.poCounter || 0, maxNum);
+  } else {
+    poCounter = data.poCounter || 0;
+  }
+  mileageRate          = data.mileageRate         || 0.725;
+  saleLocations        = data.saleLocations && data.saleLocations.length ? data.saleLocations : saleLocations;
+  dismissedTaxQuarters = data.dismissedTaxQuarters || [];
+  contacts             = Array.isArray(data.contacts) ? data.contacts : [];
+  if (data.farmIdentity && typeof data.farmIdentity === 'object') {
+    localStorage.setItem('sff_farm_identity', JSON.stringify(data.farmIdentity));
+  }
+  // If restoring a V2 backup, clear the migration flag so it runs again
+  if ((data.version || 2) < 3) {
+    localStorage.removeItem('sff_v3_migrated');
+  }
+  // Only re-run V3.1 orphan repair if backup predates V4 (V4 guarantees clean data)
+  if ((data.version || 2) < 4) {
+    localStorage.removeItem('sff_v3_1_migrated');
+  }
+  // Always re-check imported data for stray Schedule F codes on revenue,
+  // regardless of backup version -- the source bug predates version tracking.
+  localStorage.removeItem('sff_v3_2_migrated');
+  // Always re-run the invoice-payment location backfill on restore -- older
+  // backups posted invoice payments before locations were stamped on legs.
+  localStorage.removeItem('sff_v3_3_migrated');
+  // Always re-run the location backfill/rename on restore so an older backup
+  // that predates real jurisdictions gets its locations filled and renamed.
+  localStorage.removeItem('sff_v3_4_migrated');
+  saveToStorage();
+  migrateToV3();
+  migrateToV3_1();
+  migrateToV3_2();
+  migrateToV3_3();
+  migrateToV3_4();
+  renderLedgerFull();
+  renderMileage();
+  renderMarket();
+  renderInvoices();
+  renderPOs();
+  updateLedgerTiles();
+  renderDashboard();
+  renderLocationSettings();
+  renderContactSettings();
+  checkTaxBanner();
+  applyFarmIdentityToUI();
+  loadFarmIdentityFields();
+}
+
+// =====================================================
+// GOOGLE DRIVE SYNC
+// Single-user cross-device sync of the whole backup payload to the private,
+// app-only "appDataFolder" of the user's Google Drive. Auto-pull on open,
+// manual push ("Save to Drive"). Whole-document last-write-wins with a rev
+// guard: every push increments `rev`; a device only overwrites the other side
+// when it is based on the latest rev, otherwise the user is prompted.
+// =====================================================
+const GDRIVE_CLIENT_ID = '260828894575-pbn3fp1uql64lsknan63lh9ec4td403d.apps.googleusercontent.com';
+const GDRIVE_SCOPE = 'https://www.googleapis.com/auth/drive.appdata';
+const GDRIVE_FILENAME = 'farm-finance-sync.json';
+
+let _gTokenClient = null;
+let _gToken = null;          // in-memory access token (never persisted)
+let _gTokenExp = 0;          // epoch ms when the access token expires
+let _gTokenResolve = null;   // pending resolver for requestAccessToken
+let _gTokenReject = null;
+
+// Stable per-device id so conflict prompts can name the other device.
+function gdriveDeviceId() {
+  let id = localStorage.getItem('sff_device_id');
+  if (!id) { id = 'dev-' + Math.random().toString(36).slice(2, 8); localStorage.setItem('sff_device_id', id); }
+  return id;
+}
+function gdriveConnected() { return localStorage.getItem('sff_gdrive_connected') === '1'; }
+function gdriveBaseRev()  { return parseInt(localStorage.getItem('sff_gdrive_base_rev') || '0') || 0; }
+function gdriveDirty()    { return localStorage.getItem('sff_gdrive_dirty') === '1'; }
+function gdriveMarkDirty(){ if (gdriveConnected()) localStorage.setItem('sff_gdrive_dirty', '1'); }
+
+function gdriveInitClient() {
+  if (_gTokenClient || !(window.google && google.accounts && google.accounts.oauth2)) return _gTokenClient;
+  _gTokenClient = google.accounts.oauth2.initTokenClient({
+    client_id: GDRIVE_CLIENT_ID,
+    scope: GDRIVE_SCOPE,
+    callback: (resp) => {
+      if (resp && resp.access_token) {
+        _gToken = resp.access_token;
+        _gTokenExp = Date.now() + (parseInt(resp.expires_in || '3600') * 1000) - 60000; // 1-min safety margin
+        if (_gTokenResolve) _gTokenResolve(_gToken);
+      } else if (_gTokenReject) {
+        _gTokenReject(new Error('No access token returned'));
+      }
+      _gTokenResolve = _gTokenReject = null;
+    },
+    error_callback: (err) => {
+      if (_gTokenReject) _gTokenReject(new Error((err && err.type) || 'auth_error'));
+      _gTokenResolve = _gTokenReject = null;
+    },
+  });
+  return _gTokenClient;
+}
+
+// Resolve a valid access token. interactive=false attempts a silent refresh
+// (no popup); interactive=true shows the Google account/consent popup.
+function gdriveGetToken(interactive) {
+  return new Promise((resolve, reject) => {
+    if (_gToken && Date.now() < _gTokenExp) { resolve(_gToken); return; }
+    const client = gdriveInitClient();
+    if (!client) { reject(new Error('Google sign-in not loaded yet. Try again in a moment.')); return; }
+    _gTokenResolve = resolve;
+    _gTokenReject = reject;
+    try {
+      client.requestAccessToken({ prompt: interactive ? 'consent' : '' });
+    } catch (e) {
+      _gTokenResolve = _gTokenReject = null;
+      reject(e);
+    }
+  });
+}
+
+async function gdriveApi(url, opts) {
+  const token = await gdriveGetToken(false);
+  opts = opts || {};
+  opts.headers = Object.assign({}, opts.headers, { Authorization: 'Bearer ' + token });
+  const resp = await fetch(url, opts);
+  if (resp.status === 401) {
+    // Token rejected: drop it and force one interactive re-auth, then retry once.
+    _gToken = null; _gTokenExp = 0;
+    const t2 = await gdriveGetToken(true);
+    opts.headers.Authorization = 'Bearer ' + t2;
+    return fetch(url, opts);
+  }
+  return resp;
+}
+
+// Locate our sync file's Drive id (cached), returns null if none exists yet.
+async function gdriveFindFileId() {
+  const cached = localStorage.getItem('sff_gdrive_fileid');
+  if (cached) return cached;
+  const q = encodeURIComponent("name='" + GDRIVE_FILENAME + "'");
+  const resp = await gdriveApi('https://www.googleapis.com/drive/v3/files?spaces=appDataFolder&fields=files(id,name)&q=' + q);
+  if (!resp.ok) throw new Error('Drive lookup failed (' + resp.status + ')');
+  const j = await resp.json();
+  const id = (j.files && j.files[0] && j.files[0].id) || null;
+  if (id) localStorage.setItem('sff_gdrive_fileid', id);
+  return id;
+}
+
+// Fetch and parse the remote sync document; null if the file doesn't exist yet.
+async function gdriveFetchRemote() {
+  const id = await gdriveFindFileId();
+  if (!id) return null;
+  const resp = await gdriveApi('https://www.googleapis.com/drive/v3/files/' + id + '?alt=media');
+  if (resp.status === 404) { localStorage.removeItem('sff_gdrive_fileid'); return null; }
+  if (!resp.ok) throw new Error('Drive read failed (' + resp.status + ')');
+  return resp.json();
+}
+
+// Write the current app state to Drive at rev = newRev (create or update).
+async function gdrivePushDoc(newRev) {
+  const doc = buildBackupPayload();
+  doc.rev = newRev;
+  doc.syncedAt = new Date().toISOString();
+  doc.deviceId = gdriveDeviceId();
+  const body = JSON.stringify(doc);
+  const id = await gdriveFindFileId();
+  let resp;
+  if (id) {
+    resp = await gdriveApi('https://www.googleapis.com/upload/drive/v3/files/' + id + '?uploadType=media', {
+      method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body,
+    });
+  } else {
+    const boundary = 'sff' + Date.now();
+    const meta = { name: GDRIVE_FILENAME, parents: ['appDataFolder'] };
+    const multipart =
+      '--' + boundary + '\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n' + JSON.stringify(meta) +
+      '\r\n--' + boundary + '\r\nContent-Type: application/json\r\n\r\n' + body +
+      '\r\n--' + boundary + '--';
+    resp = await gdriveApi('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id', {
+      method: 'POST', headers: { 'Content-Type': 'multipart/related; boundary=' + boundary }, body: multipart,
+    });
+  }
+  if (!resp.ok) throw new Error('Drive write failed (' + resp.status + ')');
+  const j = await resp.json();
+  if (j.id) localStorage.setItem('sff_gdrive_fileid', j.id);
+  localStorage.setItem('sff_gdrive_base_rev', String(newRev));
+  localStorage.removeItem('sff_gdrive_dirty');
+  return doc;
+}
+
+// UI: "Connect Google Drive" — interactive sign-in, then an immediate pull.
+async function gdriveConnect() {
+  gdriveSetStatus('Connecting…');
+  try {
+    await gdriveGetToken(true);
+    localStorage.setItem('sff_gdrive_connected', '1');
+    await gdrivePull(true);
+    gdriveRenderPanel();
+  } catch (e) {
+    gdriveSetStatus('Connection failed: ' + (e.message || e));
+    showToast('Google Drive connection failed.', 'error');
+  }
+}
+
+function gdriveDisconnect() {
+  if (window.google && google.accounts && google.accounts.oauth2 && _gToken) {
+    try { google.accounts.oauth2.revoke(_gToken); } catch (e) {}
+  }
+  _gToken = null; _gTokenExp = 0;
+  localStorage.removeItem('sff_gdrive_connected');
+  localStorage.removeItem('sff_gdrive_fileid');
+  localStorage.removeItem('sff_gdrive_base_rev');
+  localStorage.removeItem('sff_gdrive_dirty');
+  gdriveRenderPanel();
+  showToast('Disconnected from Google Drive.');
+}
+
+// Pull remote → local. On open (auto=true) it only applies when the cloud is
+// strictly newer, and refuses to clobber unpushed local edits without asking.
+async function gdrivePull(auto) {
+  let remote;
+  try {
+    remote = await gdriveFetchRemote();
+  } catch (e) {
+    if (!auto) showToast('Drive sync failed: ' + (e.message || e), 'error');
+    gdriveSetStatus('Sync error: ' + (e.message || e));
+    return;
+  }
+  if (!remote) {
+    gdriveSetStatus(auto ? 'Connected — no cloud data yet. Use “Save to Drive.”' : 'No cloud data yet. Use “Save to Drive.”');
+    return;
+  }
+  if (!remote.version || !Array.isArray(remote.transactions)) {
+    gdriveSetStatus('Cloud file is not a valid backup.');
+    return;
+  }
+  const remoteRev = remote.rev || 0;
+  const base = gdriveBaseRev();
+  if (remoteRev <= base) {
+    gdriveSetStatus('Up to date' + (gdriveDirty() ? ' — unsaved local changes. Use “Save to Drive.”' : '.'));
+    return;
+  }
+  // Cloud is newer than what this device is based on.
+  if (gdriveDirty()) {
+    const other = remote.deviceId && remote.deviceId !== gdriveDeviceId() ? ('another device (' + remote.deviceId + ')') : 'the cloud';
+    const ok = await showConfirm(
+      'The cloud copy is newer (updated on ' + other + '), but this device has local changes that were never saved to Drive. Loading the cloud copy will discard those local changes.',
+      { title: 'Cloud data is newer', confirmLabel: 'Load cloud copy', cancelLabel: 'Keep my local data' });
+    if (!ok) { gdriveSetStatus('Kept local data. Use “Save to Drive” to push it.'); return; }
+  }
+  applyBackupPayload(remote);
+  localStorage.setItem('sff_gdrive_base_rev', String(remoteRev));
+  localStorage.removeItem('sff_gdrive_dirty');
+  gdriveRenderPanel();
+  showToast('Loaded latest data from Google Drive.');
+}
+
+// UI: "Save to Drive" — push local → remote, guarded against a newer cloud rev.
+async function gdrivePush() {
+  gdriveSetStatus('Saving to Drive…');
+  let remote;
+  try {
+    remote = await gdriveFetchRemote();
+  } catch (e) {
+    showToast('Drive sync failed: ' + (e.message || e), 'error');
+    gdriveSetStatus('Sync error: ' + (e.message || e));
+    return;
+  }
+  const remoteRev = remote && remote.rev ? remote.rev : 0;
+  const base = gdriveBaseRev();
+  if (remoteRev > base) {
+    const other = remote.deviceId && remote.deviceId !== gdriveDeviceId() ? ('another device (' + remote.deviceId + ')') : 'another device';
+    const ok = await showConfirm(
+      'The cloud copy was updated on ' + other + ' since this device last synced. Saving now will overwrite those newer cloud changes with this device\'s data.',
+      { title: 'Cloud was updated elsewhere', confirmLabel: 'Overwrite cloud', cancelLabel: 'Cancel' });
+    if (!ok) { gdriveSetStatus('Save cancelled. Use “Sync now” to load cloud data first.'); return; }
+  }
+  try {
+    await gdrivePushDoc(Math.max(remoteRev, base) + 1);
+    markSaved();
+    gdriveRenderPanel();
+    showToast('Saved to Google Drive.');
+  } catch (e) {
+    showToast('Drive save failed: ' + (e.message || e), 'error');
+    gdriveSetStatus('Save error: ' + (e.message || e));
+  }
+}
+
+function gdriveSetStatus(msg) {
+  const el = document.getElementById('gdrive-status');
+  if (el) el.textContent = msg;
+}
+
+function gdriveRenderPanel() {
+  const connected = gdriveConnected();
+  const connectBtn = document.getElementById('gdrive-connect-btn');
+  const actions = document.getElementById('gdrive-actions');
+  if (connectBtn) connectBtn.style.display = connected ? 'none' : '';
+  if (actions) actions.style.display = connected ? '' : 'none';
+  if (connected) {
+    const base = gdriveBaseRev();
+    gdriveSetStatus(base ? ('Connected. Last synced rev ' + base + (gdriveDirty() ? ' — unsaved changes.' : '.')) : 'Connected.');
+  } else {
+    gdriveSetStatus('Not connected.');
+  }
+}
+
+// Called from init(): render the panel and, if connected, silently pull.
+async function gdriveInitOnLoad() {
+  gdriveRenderPanel();
+  if (!gdriveConnected()) return;
+  // Give the GIS script a moment if it hasn't finished loading.
+  let tries = 0;
+  while (!(window.google && google.accounts && google.accounts.oauth2) && tries < 20) {
+    await new Promise(r => setTimeout(r, 150)); tries++;
+  }
+  try {
+    await gdriveGetToken(false); // silent; throws if interaction needed
+    await gdrivePull(true);
+  } catch (e) {
+    gdriveSetStatus('Connected — sign-in needed. Click “Sync now.”');
+  }
 }
 
 // =====================================================
@@ -1666,6 +1967,7 @@ function scheduleDashboard() {
 function markUnsaved() {
   hasUnsaved = true;
   saveToStorage();
+  gdriveMarkDirty();
   document.getElementById('unsaved-badge').classList.add('visible');
   scheduleDashboard();
 }
