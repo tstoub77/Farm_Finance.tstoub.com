@@ -1871,6 +1871,16 @@ async function deleteTransactionGroup(groupId) {
     showToast('These entries were posted by purchase order ' + linkedPO.poNum + '. Use Reopen or Delete on that PO in the Purchasing tab so its status and inventory value stay in sync.', 'error');
     return;
   }
+  // Guard against corrupted grouping (e.g. a legacy import that collapsed many
+  // unrelated postings into one groupId). A single real posting is a handful of
+  // legs on ONE date; a group that spans multiple dates or is very large means
+  // deleting here would silently wipe unrelated history. Block it.
+  const groupRows = transactions.filter(t => t.groupId === groupId);
+  const distinctDates = new Set(groupRows.map(t => t.date));
+  if (distinctDates.size > 1 || groupRows.length > 20) {
+    showToast(`This entry is linked to ${groupRows.length} ledger rows across ${distinctDates.size} date(s), which indicates corrupted transaction grouping. Deletion is blocked to protect the rest of your ledger.`, 'error');
+    return;
+  }
   const first = transactions.find(t => t.groupId === groupId);
   const label = first ? `"${first.desc}" on ${fmtDate(first.date)}` : 'this transaction';
   if (!(await showConfirm(`Delete ${label}? This cannot be undone.`, { title: 'Delete entry?', confirmLabel: 'Delete' }))) return;
