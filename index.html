@@ -2416,12 +2416,16 @@ function importLedgerCSV(input) {
       transactions = [];
     }
     const { rows, skipped } = parseLedgerCSV(e.target.result);
-    // In append mode, skip rows that duplicate an existing transaction
-    // on date + cat + cls + amount + desc + groupId
+    // In append mode, skip rows that duplicate an existing transaction on
+    // date + txType + cat + cls + amount + desc. groupId is deliberately NOT
+    // part of the key: a re-imported/restored row often carries a different or
+    // placeholder groupId than the original, and keying on groupId let those
+    // slip past as "new" and silently double the data (July-2026 incident that
+    // tripled mileage). Matching on the accounting content instead closes that.
     let dupes = 0;
     let toAdd = rows;
     if (importMode !== 'replace') {
-      const keyOf = t => [t.date, t.cat, t.cls, t.amount.toFixed(2), t.desc, t.groupId || ''].join('\u0001');
+      const keyOf = t => [t.date, t.txType, t.cat, t.cls, t.amount.toFixed(2), t.desc].join('\u0001');
       const existing = new Set(transactions.map(keyOf));
       toAdd = rows.filter(r => {
         if (existing.has(keyOf(r))) { dupes++; return false; }
@@ -2437,10 +2441,24 @@ function importLedgerCSV(input) {
     const touchedGroupIds = new Set(toAdd.map(r => r.groupId).filter(gid => gid !== undefined && gid !== null));
     const unbalanced = unbalancedGroupCount(transactions.filter(t => touchedGroupIds.has(t.groupId)));
 
+    // Guardrail: flag imports that use a placeholder groupId or cram many rows
+    // into one group. Legitimate groupIds are large (seed IDs > 1,000,000 or
+    // 13-digit timestamps) and hold only a transaction's few legs. A value like
+    // 1, or dozens of rows sharing one groupId, is the fingerprint of the
+    // malformed restore that corrupted this ledger -- surface it loudly.
+    const groupCounts = {};
+    toAdd.forEach(r => { if (r.groupId != null) groupCounts[r.groupId] = (groupCounts[r.groupId] || 0) + 1; });
+    const suspiciousGroups = Object.entries(groupCounts)
+      .filter(([gid, n]) => Number(gid) < 1000 || n > 20)
+      .map(([gid, n]) => `#${gid} (${n} rows)`);
+    const warn = suspiciousGroups.length
+      ? `Suspicious group IDs: ${suspiciousGroups.join(', ')}. Real group IDs are large and unique; a tiny or heavily shared ID usually means a malformed file that will duplicate data. Review these rows before saving.`
+      : '';
+
     markUnsaved();
     renderLedger();
     updateLedgerTiles();
-    showImportSummary('ledger-import-summary', toAdd.length, skipped, dupes, unbalanced);
+    showImportSummary('ledger-import-summary', toAdd.length, skipped, dupes, unbalanced, undefined, warn);
   };
   reader.readAsText(file);
   input.value = '';
@@ -4151,17 +4169,19 @@ function fmtTimestamp() {
   return `${d.getFullYear()}-${mm}-${dd}_${hh}${min}`;
 }
 
-function showImportSummary(id, imported, skipped, dupes, unbalanced, note) {
+function showImportSummary(id, imported, skipped, dupes, unbalanced, note, warn) {
   const el = document.getElementById(id);
   let msg = `${imported} row${imported !== 1 ? 's' : ''} imported${skipped ? ', ' + skipped + ' skipped' : ''}${dupes ? ', ' + dupes + ' duplicates skipped' : ''}.`;
   if (unbalanced) {
     msg += ` Warning: ${unbalanced} transaction group${unbalanced !== 1 ? 's' : ''} did not balance (legs don't net to zero) -- review before trusting these totals.`;
   }
+  if (warn) msg += ` ${warn}`;
   if (note) msg += ` ${note}`;
+  const problem = !!unbalanced || !!warn;
   el.textContent = msg;
-  el.classList.toggle('import-error', !!unbalanced);
+  el.classList.toggle('import-error', problem);
   el.style.display = 'block';
-  if (!unbalanced && !note) setTimeout(() => { el.style.display = 'none'; }, 6000);
+  if (!problem && !note) setTimeout(() => { el.style.display = 'none'; }, 6000);
 }
 
 function parseDate(str) {
@@ -5226,6 +5246,29 @@ function migrateToV3_4() {
   console.log('V3.4 auto-migration (location backfill + rename):', result);
 }
 
+// Detect exact-duplicate transactions and mileage trips posted to the ledger
+// more than once. The old groupId-keyed import dedup let a malformed restore
+// double the data without complaint; this scan is the safety net that would
+// have caught all of it. Detect-and-report only -- removal stays a deliberate,
+// user-driven step, never automatic.
+function scanDuplicates() {
+  const sig = t => [t.date, t.txType, t.cat, t.cls, t.amount.toFixed(2), t.desc].join('|');
+  const counts = {};
+  transactions.forEach(t => { counts[sig(t)] = (counts[sig(t)] || 0) + 1; });
+  let dupSignatures = 0, extraRows = 0;
+  Object.values(counts).forEach(n => { if (n > 1) { dupSignatures++; extraRows += n - 1; } });
+
+  // Mileage trips whose ledger presence exceeds the expected single leg.
+  const legs = transactions.filter(t => t.cls === 'Contribution Expense' && t.cat === 'Mileage');
+  let mileageOverPosted = 0;
+  mileageLog.forEach(m => {
+    const n = legs.filter(t => t.date === m.date && t.desc === m.location &&
+      Math.abs(Math.abs(t.amount) - m.expense) < 0.01).length;
+    if (n > 1) mileageOverPosted++;
+  });
+  return { dupSignatures, extraRows, mileageOverPosted };
+}
+
 function runMigrationManually() {
   // Always re-run regardless of flag
   localStorage.removeItem('sff_v3_1_migrated');
@@ -5244,23 +5287,37 @@ function runMigrationManually() {
   const mileageCovered = result.mileageAlreadyPresent + result.miIdStamped + result.mileageBackfilled;
   const allCovered = mileageCovered === mileageTotal;
 
-  if (!anyWork && allCovered) {
+  // Duplicate scan runs after any repair so its counts reflect the final state.
+  const dup = scanDuplicates();
+  const dupWarning = dup.extraRows > 0
+    ? '<br><strong style="color:#8a1c1c">Duplicate transactions detected: ' + dup.extraRows +
+        ' extra row' + (dup.extraRows !== 1 ? 's' : '') + ' across ' + dup.dupSignatures +
+        ' signature' + (dup.dupSignatures !== 1 ? 's' : '') +
+        (dup.mileageOverPosted ? ', including ' + dup.mileageOverPosted + ' mileage trip' +
+          (dup.mileageOverPosted !== 1 ? 's' : '') + ' posted more than once' : '') +
+        '. Export a backup and remove the duplicates before trusting your totals.</strong>'
+    : '';
+  const clean = !anyWork && allCovered && dup.extraRows === 0;
+
+  if (clean) {
     el.style.background = '#d4edda';
     el.style.border = '1px solid #b0d8bb';
     el.style.color = '#155724';
     el.innerHTML = '<strong>All clear.</strong> No issues found. Mileage log and ledger are fully in sync (' + mileageTotal + ' of ' + mileageTotal + ' trips covered).'
       + ' Transactions: ' + result.txCountAfter + '.';
   } else {
-    el.style.background = anyWork ? '#fff8e1' : '#d4edda';
-    el.style.border = anyWork ? '1px solid #ffe082' : '1px solid #b0d8bb';
-    el.style.color = anyWork ? '#5d4037' : '#155724';
+    const flag = anyWork || dup.extraRows > 0;
+    el.style.background = flag ? '#fff8e1' : '#d4edda';
+    el.style.border = flag ? '1px solid #ffe082' : '1px solid #b0d8bb';
+    el.style.color = flag ? '#5d4037' : '#155724';
     el.innerHTML =
       '<strong>' + (anyWork ? 'Migration complete.' : 'No changes needed.') + '</strong><br>' +
       'Orphaned group pairs repaired: ' + result.orphanPairsRepaired + '<br>' +
       'Mileage ledger rows stamped with link ID: ' + result.miIdStamped + '<br>' +
       'Mileage trips backfilled to ledger: ' + result.mileageBackfilled + ' (of ' + mileageTotal + ' total trips)<br>' +
       'Trips already in ledger: ' + result.mileageAlreadyPresent + '<br>' +
-      'Ledger rows before: ' + result.txCountBefore + ' &rarr; after: ' + result.txCountAfter;
+      'Ledger rows before: ' + result.txCountBefore + ' &rarr; after: ' + result.txCountAfter +
+      dupWarning;
   }
   el.style.display = 'block';
 }
