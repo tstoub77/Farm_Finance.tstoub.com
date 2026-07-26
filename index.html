@@ -2394,11 +2394,14 @@ function printLedger() {
 function exportLedgerCSV() {
   const ts = fmtTimestamp();
   const year = new Date().getFullYear();
-  const headers = 'Date,Description,Category,Classification,Amount,Notes,ScheduleF,CheckNum,TxType,GroupId,Channel,Location,Qty';
+  // Id is exported last so re-importing an export can dedup on the stable
+  // per-row id -- distinguishing a true re-import (same id) from a legitimate
+  // twin transaction (two payers, same date/amount/desc, different ids).
+  const headers = 'Date,Description,Category,Classification,Amount,Notes,ScheduleF,CheckNum,TxType,GroupId,Channel,Location,Qty,Id';
   const rows = transactions.map(t =>
     [t.date, csvQ(t.desc), csvQ(t.cat), csvQ(t.cls), t.amount.toFixed(2),
      csvQ(t.notes||''), csvQ(t.schf||''), csvQ(t.check||''), csvQ(t.txType||''), t.groupId||'', csvQ(t.channel||''), csvQ(t.location||''),
-     t.qty !== undefined && t.qty !== null ? t.qty : ''].join(',')
+     t.qty !== undefined && t.qty !== null ? t.qty : '', t.id||''].join(',')
   );
   downloadCSV(`Ledger_${year}_${ts}.csv`, [headers, ...rows].join('\n'));
 }
@@ -2415,22 +2418,33 @@ function importLedgerCSV(input) {
       }
       transactions = [];
     }
-    const { rows, skipped } = parseLedgerCSV(e.target.result);
-    // In append mode, skip rows that duplicate an existing transaction on
-    // date + txType + cat + cls + amount + desc. groupId is deliberately NOT
-    // part of the key: a re-imported/restored row often carries a different or
-    // placeholder groupId than the original, and keying on groupId let those
-    // slip past as "new" and silently double the data (July-2026 incident that
-    // tripled mileage). Matching on the accounting content instead closes that.
+    const { rows, skipped, hasIds } = parseLedgerCSV(e.target.result);
+    // Append-mode duplicate skipping. Two strategies:
+    //  - If the CSV carries stable ids (our own export does), dedup on id.
+    //    Exact: a true re-import repeats an id; a legitimate twin transaction
+    //    (two payers, same date/amount/desc) has its own id and is preserved.
+    //  - Otherwise fall back to accounting content (date+txType+cat+cls+
+    //    amount+desc), excluding groupId -- keying on groupId is what let the
+    //    July-2026 restore slip placeholder-grouped copies past dedup and
+    //    triple the mileage. The content key can't tell a twin from a dup, so
+    //    prefer re-importing an id-bearing export.
     let dupes = 0;
     let toAdd = rows;
     if (importMode !== 'replace') {
+      if (hasIds) {
+        const existingIds = new Set(transactions.map(t => t.id));
+        toAdd = rows.filter(r => {
+          if (existingIds.has(r.id)) { dupes++; return false; }
+          return true;
+        });
+      } else {
       const keyOf = t => [t.date, t.txType, t.cat, t.cls, t.amount.toFixed(2), t.desc].join('\u0001');
       const existing = new Set(transactions.map(keyOf));
       toAdd = rows.filter(r => {
         if (existing.has(keyOf(r))) { dupes++; return false; }
         return true;
       });
+      }
     }
     transactions = [...transactions, ...toAdd];
     sortTransactions();
@@ -2499,7 +2513,8 @@ function parseLedgerCSV(text) {
       groupid:['groupid','group'],
       channel:['channel','saleschannel','sales_channel'],
       location:['location','loc','salelocation','saleslocation'],
-      qty:['qty','quantity','units']
+      qty:['qty','quantity','units'],
+      id:['id','transactionid','txid','rowid']
     };
     for (const a of (aliases[k]||[k])) {
       const idx = rawHeaders.indexOf(a);
@@ -2508,6 +2523,8 @@ function parseLedgerCSV(text) {
     return -1;
   };
 
+  const idIdx = col('id');
+  const hasIds = idIdx !== -1;
   const rows = [];
   let skipped = 0;
   for (let i = 1; i < lines.length; i++) {
@@ -2520,8 +2537,12 @@ function parseLedgerCSV(text) {
     const qtyIdx = col('qty');
     const qtyRaw = qtyIdx !== -1 ? (c[qtyIdx]||'').trim() : '';
     const qtyVal = qtyRaw !== '' && !isNaN(parseFloat(qtyRaw)) ? parseFloat(qtyRaw) : undefined;
+    // Preserve a stable id from the CSV when present so re-imports can be
+    // deduped exactly; otherwise mint a fresh one.
+    const idRaw = idIdx !== -1 ? (c[idIdx]||'').trim() : '';
+    const rowId = idRaw !== '' && !isNaN(parseInt(idRaw)) ? parseInt(idRaw) : nextId();
     rows.push({
-      id: nextId(),
+      id: rowId,
       groupId: gid,
       txType: (c[col('txtype')]||'').trim(),
       date: parseDate(c[col('date')]||''),
@@ -2537,7 +2558,7 @@ function parseLedgerCSV(text) {
       qty: qtyVal
     });
   }
-  return { rows, skipped };
+  return { rows, skipped, hasIds };
 }
 
 // =====================================================
@@ -5246,15 +5267,21 @@ function migrateToV3_4() {
   console.log('V3.4 auto-migration (location backfill + rename):', result);
 }
 
-// Detect exact-duplicate transactions and mileage trips posted to the ledger
-// more than once. The old groupId-keyed import dedup let a malformed restore
-// double the data without complaint; this scan is the safety net that would
-// have caught all of it. Detect-and-report only -- removal stays a deliberate,
-// user-driven step, never automatic.
+// Surface likely-duplicate data. Two signals of different confidence:
+//  - mileageOverPosted is DEFINITIVE: it cross-checks the ledger against the
+//    mileage sheet (the authoritative trip record), so any trip with more than
+//    one ledger leg is a genuine duplicate.
+//  - dupSignatures/extraRows is a SOFT hint: rows sharing date+type+cat+cls+
+//    amount+desc. Two different payers can legitimately match (e.g. two people
+//    Zelle $15 the same day), so these are "review", not confirmed dupes.
+// Detect-and-report only -- removal stays a deliberate, user-driven step.
 function scanDuplicates() {
+  // Generic content collisions, excluding mileage expense legs -- those are
+  // counted definitively below against the sheet, so keep the two signals from
+  // double-counting each other.
   const sig = t => [t.date, t.txType, t.cat, t.cls, t.amount.toFixed(2), t.desc].join('|');
   const counts = {};
-  transactions.forEach(t => { counts[sig(t)] = (counts[sig(t)] || 0) + 1; });
+  transactions.forEach(t => { if (t.cat === 'Mileage') return; counts[sig(t)] = (counts[sig(t)] || 0) + 1; });
   let dupSignatures = 0, extraRows = 0;
   Object.values(counts).forEach(n => { if (n > 1) { dupSignatures++; extraRows += n - 1; } });
 
@@ -5288,16 +5315,21 @@ function runMigrationManually() {
   const allCovered = mileageCovered === mileageTotal;
 
   // Duplicate scan runs after any repair so its counts reflect the final state.
+  // Mileage over-posting is a confirmed duplicate (checked against the sheet);
+  // matching content signatures are only a "review" hint (twins are legitimate).
   const dup = scanDuplicates();
-  const dupWarning = dup.extraRows > 0
-    ? '<br><strong style="color:#8a1c1c">Duplicate transactions detected: ' + dup.extraRows +
-        ' extra row' + (dup.extraRows !== 1 ? 's' : '') + ' across ' + dup.dupSignatures +
-        ' signature' + (dup.dupSignatures !== 1 ? 's' : '') +
-        (dup.mileageOverPosted ? ', including ' + dup.mileageOverPosted + ' mileage trip' +
-          (dup.mileageOverPosted !== 1 ? 's' : '') + ' posted more than once' : '') +
-        '. Export a backup and remove the duplicates before trusting your totals.</strong>'
-    : '';
-  const clean = !anyWork && allCovered && dup.extraRows === 0;
+  const dupWarning =
+    (dup.mileageOverPosted > 0
+      ? '<br><strong style="color:#8a1c1c">Mileage duplicates: ' + dup.mileageOverPosted +
+        ' trip' + (dup.mileageOverPosted !== 1 ? 's' : '') + ' posted to the ledger more than once ' +
+        '(vs the mileage sheet). Export a backup and remove the extra legs before trusting your totals.</strong>'
+      : '') +
+    (dup.extraRows > 0
+      ? '<br><span style="color:#8a5c00">Possible duplicates to review: ' + dup.extraRows +
+        ' row' + (dup.extraRows !== 1 ? 's' : '') + ' share an identical date, amount, and description. ' +
+        'These may be legitimate (e.g. two people paying the same amount the same day) -- verify before deleting.</span>'
+      : '');
+  const clean = !anyWork && allCovered && dup.mileageOverPosted === 0 && dup.extraRows === 0;
 
   if (clean) {
     el.style.background = '#d4edda';
@@ -5306,7 +5338,7 @@ function runMigrationManually() {
     el.innerHTML = '<strong>All clear.</strong> No issues found. Mileage log and ledger are fully in sync (' + mileageTotal + ' of ' + mileageTotal + ' trips covered).'
       + ' Transactions: ' + result.txCountAfter + '.';
   } else {
-    const flag = anyWork || dup.extraRows > 0;
+    const flag = anyWork || dup.extraRows > 0 || dup.mileageOverPosted > 0;
     el.style.background = flag ? '#fff8e1' : '#d4edda';
     el.style.border = flag ? '1px solid #ffe082' : '1px solid #b0d8bb';
     el.style.color = flag ? '#5d4037' : '#155724';
