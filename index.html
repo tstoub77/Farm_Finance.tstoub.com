@@ -1699,6 +1699,12 @@ function gdriveDeviceId() {
   return id;
 }
 function gdriveConnected() { return localStorage.getItem('sff_gdrive_connected') === '1'; }
+// True when this device already holds real farm data locally.
+function gdriveHasLocalData() {
+  return (transactions && transactions.length) || (invoices && invoices.length) ||
+         (purchaseOrders && purchaseOrders.length) || (mileageLog && mileageLog.length) ||
+         (marketLog && marketLog.length) || (contacts && contacts.length);
+}
 function gdriveBaseRev()  { return parseInt(localStorage.getItem('sff_gdrive_base_rev') || '0') || 0; }
 function gdriveDirty()    { return localStorage.getItem('sff_gdrive_dirty') === '1'; }
 function gdriveMarkDirty(){ if (gdriveConnected()) localStorage.setItem('sff_gdrive_dirty', '1'); }
@@ -1866,12 +1872,21 @@ async function gdrivePull(auto) {
     gdriveSetStatus('Up to date' + (gdriveDirty() ? ' — unsaved local changes. Use “Save to Drive.”' : '.'));
     return;
   }
-  // Cloud is newer than what this device is based on.
-  if (gdriveDirty()) {
+  // Cloud is newer than what this device is based on. Two cases warrant a
+  // prompt before overwriting local data:
+  //   (a) unsaved local edits exist (dirty), or
+  //   (b) first-ever connect on this device (base 0) while it already holds
+  //       real local data — e.g. connecting the live app whose books predate
+  //       sync. Either way, ask before replacing local data.
+  const firstConnectWithData = base === 0 && gdriveHasLocalData();
+  if (gdriveDirty() || firstConnectWithData) {
     const other = remote.deviceId && remote.deviceId !== gdriveDeviceId() ? ('another device (' + remote.deviceId + ')') : 'the cloud';
-    const ok = await showConfirm(
-      'The cloud copy is newer (updated on ' + other + '), but this device has local changes that were never saved to Drive. Loading the cloud copy will discard those local changes.',
-      { title: 'Cloud data is newer', confirmLabel: 'Load cloud copy', cancelLabel: 'Keep my local data' });
+    const msg = firstConnectWithData
+      ? 'This device already has farm data, and Google Drive holds different data (from ' + other + '). Loading the cloud copy will replace this device\'s data. If your real records are on this device, choose “Keep my local data,” then use “Save to Drive” to push them up.'
+      : 'The cloud copy is newer (updated on ' + other + '), but this device has local changes that were never saved to Drive. Loading the cloud copy will discard those local changes.';
+    const ok = await showConfirm(msg,
+      { title: firstConnectWithData ? 'This device already has data' : 'Cloud data is newer',
+        confirmLabel: 'Load cloud copy', cancelLabel: 'Keep my local data' });
     if (!ok) { gdriveSetStatus('Kept local data. Use “Save to Drive” to push it.'); return; }
   }
   applyBackupPayload(remote);
