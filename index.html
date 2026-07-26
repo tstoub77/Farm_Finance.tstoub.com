@@ -372,6 +372,12 @@ tbody td { padding: 8px 12px; color: var(--text); vertical-align: middle; }
 
 <!-- TAB: DASHBOARD -->
 <div class="tab-panel active" id="tab-dashboard" role="tabpanel" aria-labelledby="tabbtn-dashboard">
+  <div style="display:flex;justify-content:flex-end;align-items:flex-end;margin-bottom:16px">
+    <div class="form-group" style="max-width:150px;margin:0">
+      <label for="dash-year">Dashboard Year</label>
+      <select id="dash-year" onchange="renderDashboard()"></select>
+    </div>
+  </div>
   <div class="tiles" id="dash-tiles" style="grid-template-columns:repeat(auto-fit,minmax(160px,1fr))"></div>
   <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:22px;margin-top:4px">
     <div class="card" style="margin-bottom:0">
@@ -978,6 +984,10 @@ tbody td { padding: 8px 12px; color: var(--text); vertical-align: middle; }
       </div>
       <div id="migration-status" style="display:none;margin-top:12px;padding:10px 14px;border-radius:4px;font-size:0.83rem;line-height:1.6"></div>
     </div>
+    <div class="settings-section">
+      <h3>About</h3>
+      <p style="font-size:0.82rem;color:var(--text-muted)">Finance Records <strong id="about-app-version"></strong><span style="color:var(--border);margin:0 8px">|</span>Backup format v<span id="about-backup-version"></span></p>
+    </div>
   </div>
 </div>
 
@@ -1076,6 +1086,22 @@ tbody td { padding: 8px 12px; color: var(--text); vertical-align: middle; }
 </div>
 
 <script>
+// =====================================================
+// VERSION NUMBERS — three independent axes, do NOT conflate them:
+//   APP_VERSION            Human-facing build label (browser title + Settings).
+//                          Bump on any release.
+//   BACKUP_SCHEMA_VERSION  Shape of the exported backup JSON. Bump ONLY when the
+//                          backup structure changes; importFarmBackup() reads a
+//                          backup's `version` to decide which migrations to re-run.
+//   Migration level        The one-time data migrations (migrateToV3 … V3_4),
+//                          guarded by permanent `sff_v3_x_migrated` localStorage
+//                          flags. Never rename those keys — it would silently
+//                          re-run every migration on load. This counter is
+//                          intentionally decoupled from APP_VERSION.
+// =====================================================
+const APP_VERSION = '7.8';
+const BACKUP_SCHEMA_VERSION = 4;
+
 // =====================================================
 // DATA
 // =====================================================
@@ -1289,7 +1315,7 @@ function applyFarmIdentityToUI() {
   if (ph) ph.textContent = name;
   const lp = document.getElementById('ledger-print-name');
   if (lp) lp.textContent = name;
-  document.title = name + ' | Finance Records v7.8';
+  document.title = name + ' | Finance Records v' + APP_VERSION;
 }
 
 function loadFarmIdentityFields() {
@@ -1347,6 +1373,8 @@ function init() {
   checkTaxBanner();
   applyFarmIdentityToUI();
   loadFarmIdentityFields();
+  document.getElementById('about-app-version').textContent = 'v' + APP_VERSION;
+  document.getElementById('about-backup-version').textContent = BACKUP_SCHEMA_VERSION;
 }
 
 function todayStr() {
@@ -1505,7 +1533,7 @@ function loadFromStorage() {
 function exportFarmBackup() {
   const now = new Date();
   const payload = {
-    version: 4,
+    version: BACKUP_SCHEMA_VERSION,
     exportedAt: now.toLocaleString('en-US', { year:'numeric', month:'2-digit', day:'2-digit', hour:'2-digit', minute:'2-digit', second:'2-digit', hour12: false }),
     transactions,
     mileageLog,
@@ -1877,27 +1905,49 @@ function updateLedgerTiles() {
 // =====================================================
 // DASHBOARD
 // =====================================================
-function renderDashboard() {
-  const year = new Date().getFullYear();
-  const ytd = transactions.filter(t => t.date.startsWith(String(year)));
+// Fill the dashboard year picker with every year that has data (plus the
+// current year), newest first, preserving the current selection.
+function populateDashYear() {
+  const sel = document.getElementById('dash-year');
+  if (!sel) return;
+  const cur = new Date().getFullYear();
+  const years = new Set([cur]);
+  transactions.forEach(t => { const y = parseInt(t.date.slice(0, 4)); if (y) years.add(y); });
+  const sorted = [...years].sort((a, b) => b - a);
+  const prev = sel.value;
+  sel.innerHTML = sorted.map(y => `<option value="${y}">${y}${y === cur ? ' (current)' : ''}</option>`).join('');
+  sel.value = (prev && sorted.includes(parseInt(prev))) ? prev : String(cur);
+}
 
-  // Core financials
-  const checking = transactions.filter(t => t.cat === 'Cash - Checking').reduce((s,t) => s + t.amount, 0);
+function renderDashboard() {
+  populateDashYear();
+  const curYear = new Date().getFullYear();
+  const sel = document.getElementById('dash-year');
+  const year = sel && sel.value ? parseInt(sel.value) : curYear;
+  const isCurrent = year === curYear;
+  const yStr = String(year);
+  const suffix = isCurrent ? 'YTD' : yStr;
+  const ytd = transactions.filter(t => t.date.startsWith(yStr));
+
+  // Core financials. Checking is a running balance: for the current year show the
+  // live all-time balance (matches the ledger tile); for a prior year show the
+  // balance as of that Dec 31 so the snapshot reflects the year being viewed.
+  const checking = transactions.filter(t => t.cat === 'Cash - Checking' && (isCurrent || t.date <= `${yStr}-12-31`)).reduce((s,t) => s + t.amount, 0);
   const revenue  = ytd.filter(t => t.cls === 'Revenue' && t.txType !== 'Year-End Close').reduce((s,t) => s + t.amount, 0);
   const expenses = ytd.filter(t => ['Expense','Other Expense','Contribution Expense'].includes(t.cls) && t.txType !== 'Year-End Close').reduce((s,t) => s + t.amount, 0);
   const net      = revenue + expenses;
 
-  // Sales tax owed (all time, not yet paid = net liability)
-  const taxOwed = transactions.filter(t => t.cat === 'Retail Tax').reduce((s,t) => s + t.amount, 0);
+  // Sales tax owed for the selected year (collected net of that year's payments)
+  const taxOwed = transactions.filter(t => t.cat === 'Retail Tax' && t.date.startsWith(yStr)).reduce((s,t) => s + t.amount, 0);
 
   // Tiles
   const tilesEl = document.getElementById('dash-tiles');
   tilesEl.innerHTML = [
-    { label: 'Checking Balance', val: checking, signed: true },
-    { label: 'Revenue YTD',      val: revenue,  signed: false },
-    { label: 'Expenses YTD',     val: Math.abs(expenses), signed: false },
-    { label: 'Net Income',       val: net,      signed: true },
-    { label: 'Sales Tax Due',    val: taxOwed,  signed: true }
+    { label: isCurrent ? 'Checking Balance' : `Checking (Dec 31, ${yStr})`, val: checking, signed: true },
+    { label: `Revenue ${suffix}`,      val: revenue,  signed: false },
+    { label: `Expenses ${suffix}`,     val: Math.abs(expenses), signed: false },
+    { label: `Net Income ${suffix}`,   val: net,      signed: true },
+    { label: `Sales Tax Due ${suffix}`, val: taxOwed,  signed: true }
   ].map(({ label, val, signed }) => {
     const cls = signed ? (val >= 0 ? 'tile-pos' : 'tile-neg') : '';
     return `<div class="tile ${cls}"><span class="tile-value">${fmtDollar(val)}</span><span class="tile-label">${label}</span></div>`;
