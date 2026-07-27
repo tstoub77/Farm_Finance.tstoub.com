@@ -1293,7 +1293,6 @@ const SCHEDULE_F_MAP = {
   'Interest': 'Interest',
   'Mileage': 'Car and truck expenses',
   'COGS Production': '',
-  'Chemicals': 'Chemicals',
   // Inventory subcategories
   'Inventory - Feed': 'Feed',
   'Inventory - Seeds': 'Seeds and plants purchased',
@@ -1301,8 +1300,7 @@ const SCHEDULE_F_MAP = {
   'Inventory - Supplies': 'Supplies purchased',
   'Inventory - Grain': '',   // No direct Schedule F line for grain inventory
   'Inventory - Resale': '',  // Resale goods carried as inventory
-  'COGS - Resale': '',       // Cost of resale goods; reported via cost of goods sold
-  'Accounts Payable': ''
+  'COGS - Resale': ''        // Cost of resale goods; reported via cost of goods sold
 };
 
 const ALL_SCHEDULE_F = ['','Car and truck expenses','Chemicals','Custom hire (contractor)','Feed','Fertilizer and lime','Freight and trucking','Gasoline, fuel, and oil','Insurance','Interest','Rent or lease','Repairs and maintenance','Seeds and plants purchased','Storage and warehousing','Supplies purchased','Taxes','Utilities','Other: Marketing','Other: Office Space','Other: Office Supplies','Other: Professional Fees'];
@@ -3147,7 +3145,24 @@ function generateReport() {
 
   const revByCat = groupSum(revenue, 'cat');
   const expByCat = groupSum(expenses, 'cat', true);
-  const schfTx = filtered.filter(t => t.schf);
+  // Cash-basis Schedule F recognition splits by leg kind:
+  //   - Expense/Contribution legs are deducted when INCURRED (their own date), so
+  //     they come straight from `filtered`.
+  //   - An inventory purchase is deducted when PAID, not when received. A manual
+  //     Inventory Purchase pays on the spot (receive date == pay date), but a PO
+  //     can be received in one period and paid in another -- its deduction belongs
+  //     to the payment period, and a received-but-unpaid PO is not deducted yet.
+  //     So inventory-purchase legs are recognized by their PO's payment date,
+  //     falling back to the leg's own date for non-PO (manual) purchases.
+  const poPayDateByGrp = {};
+  purchaseOrders.forEach(po => { if (po.grpReceived != null) poPayDateByGrp[po.grpReceived] = po.paidDate || null; });
+  const schfRecogDate = t => (t.groupId != null && poPayDateByGrp.hasOwnProperty(t.groupId)) ? poPayDateByGrp[t.groupId] : t.date;
+  const invDeductionLegs = transactions.filter(t => {
+    if (t.cls !== 'Inventory' || !t.schf || t.amount <= 0) return false;
+    const rd = schfRecogDate(t);
+    return rd && inPeriod(rd);
+  });
+
   // Schedule F deduction per line = |net of the expense-class legs| + inventory-
   // purchase legs. The two kinds are summed separately on purpose:
   //   - Expense/Contribution legs are NETTED within a line first, so a refund
@@ -3157,22 +3172,20 @@ function generateReport() {
   //     expenses, so a Feed expense and an Inventory - Feed purchase on the same
   //     line don't cancel; both are legitimate cash-basis deductions.
   const schfExp = {}, schfInv = {};
-  schfTx.forEach(t => {
-    const bucket = t.cls === 'Inventory' ? schfInv : schfExp;
-    bucket[t.schf] = (bucket[t.schf] || 0) + t.amount;
-  });
+  filtered.forEach(t => { if (t.schf && t.cls !== 'Inventory') schfExp[t.schf] = (schfExp[t.schf] || 0) + t.amount; });
+  invDeductionLegs.forEach(t => { schfInv[t.schf] = (schfInv[t.schf] || 0) + t.amount; });
   const schfGroups = {};
   new Set([...Object.keys(schfExp), ...Object.keys(schfInv)]).forEach(code => {
     schfGroups[code] = Math.abs(schfExp[code] || 0) + (schfInv[code] || 0);
   });
   const schfTotal = Object.values(schfGroups).reduce((s, v) => s + v, 0);
-  // Reconciles Schedule F to the Expense Breakdown: inventory purchases carry
-  // their Schedule F code at purchase (cash-basis deduction) but post to the
-  // Inventory asset, not an Expense class, so they're outside totalExp. Inventory
-  // Used posts the offsetting COGS expense but with schf explicitly blanked
-  // (see TX_TYPES) so it isn't deducted twice. The two adjustments below are
-  // exactly the difference between totalExp and schfTotal.
-  const invPurchasedSchf = filtered.filter(t => t.cls === 'Inventory' && t.schf).reduce((s, t) => s + t.amount, 0);
+  // Reconciles Schedule F to the Expense Breakdown: inventory purchases are
+  // deducted when PAID (see above) but post to the Inventory asset, not an
+  // Expense class, so they're outside totalExp. Inventory Used posts the
+  // offsetting COGS expense but with schf explicitly blanked (see TX_TYPES) so it
+  // isn't deducted twice. The two adjustments below are exactly the difference
+  // between totalExp and schfTotal.
+  const invPurchasedSchf = invDeductionLegs.reduce((s, t) => s + t.amount, 0);
   const invUsedCOGS = filtered.filter(t => t.cls === 'Other Expense').reduce((s, t) => s + Math.abs(t.amount), 0);
   const showSchfRecon = schfTotal > 0 || invPurchasedSchf > 0 || invUsedCOGS > 0;
   const miFiltered = mileageLog.filter(m => inPeriod(m.date));
@@ -3286,12 +3299,12 @@ function generateReport() {
   if (showSchfRecon) {
     html += `<div class="report-section">
       <h3>Reconciling Schedule F to Expenses</h3>
-      <p class="schf-note">Schedule F deducts inventory when purchased (cash basis). The Expense Breakdown recognizes it when used. This is why the two totals above don't match -- it isn't an error.</p>
+      <p class="schf-note">Schedule F deducts inventory when paid (cash basis). The Expense Breakdown recognizes it when used. This is why the two totals above don't match -- it isn't an error.</p>
       <table class="report-table">
         <tbody>
           <tr><td>Expense Breakdown Total (this period)</td><td style="text-align:right">${fmt$(Math.abs(totalExp))}</td></tr>
-          <tr><td>Less: Inventory Used / COGS (already deducted at purchase)</td><td style="text-align:right">(${fmt$(invUsedCOGS)})</td></tr>
-          <tr><td>Plus: Inventory Purchased this period (deducted now)</td><td style="text-align:right">${fmt$(invPurchasedSchf)}</td></tr>
+          <tr><td>Less: Inventory Used / COGS (already deducted when paid)</td><td style="text-align:right">(${fmt$(invUsedCOGS)})</td></tr>
+          <tr><td>Plus: Inventory Paid this period (cash-basis deduction)</td><td style="text-align:right">${fmt$(invPurchasedSchf)}</td></tr>
         </tbody>
         <tfoot><tr><td>= Total Schedule F Deductions</td><td style="text-align:right">${fmt$(schfTotal)}</td></tr></tfoot>
       </table>
