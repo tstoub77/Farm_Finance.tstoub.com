@@ -1107,13 +1107,13 @@ tbody td { padding: 8px 12px; color: var(--text); vertical-align: middle; }
 //   BACKUP_SCHEMA_VERSION  Shape of the exported backup JSON. Bump ONLY when the
 //                          backup structure changes; importFarmBackup() reads a
 //                          backup's `version` to decide which migrations to re-run.
-//   Migration level        The one-time data migrations (migrateToV3 … V3_4),
+//   Migration level        The one-time data migrations (migrateToV3 … V3_5),
 //                          guarded by permanent `sff_v3_x_migrated` localStorage
 //                          flags. Never rename those keys — it would silently
 //                          re-run every migration on load. This counter is
 //                          intentionally decoupled from APP_VERSION.
 // =====================================================
-const APP_VERSION = '7.8';
+const APP_VERSION = '7.9';
 const BACKUP_SCHEMA_VERSION = 4;
 
 // =====================================================
@@ -1557,6 +1557,7 @@ function loadFromStorage() {
   migrateToV3_2();
   migrateToV3_3();
   migrateToV3_4();
+  migrateToV3_5();
 }
 
 // =====================================================
@@ -1692,12 +1693,16 @@ function applyBackupPayload(data) {
   // Always re-run the location backfill/rename on restore so an older backup
   // that predates real jurisdictions gets its locations filled and renamed.
   localStorage.removeItem('sff_v3_4_migrated');
+  // Always re-enforce the Schedule F invariant on restore -- older backups
+  // carried codes stranded on COGS and equity legs that overstate the deduction.
+  localStorage.removeItem('sff_v3_5_migrated');
   saveToStorage();
   migrateToV3();
   migrateToV3_1();
   migrateToV3_2();
   migrateToV3_3();
   migrateToV3_4();
+  migrateToV3_5();
   renderAll();
 }
 
@@ -3133,14 +3138,23 @@ function generateReport() {
   const revByCat = groupSum(revenue, 'cat');
   const expByCat = groupSum(expenses, 'cat', true);
   const schfTx = filtered.filter(t => t.schf);
-  // Schedule F deductions sum per transaction as absolute dollars. Expense legs
-  // post negative and inventory purchase legs post positive, so netting them
-  // first (the old groupSum approach) cancelled deductions that share a
-  // Schedule F line, for example Feed expenses against Inventory - Feed purchases.
-  const schfGroups = schfTx.reduce((acc, t) => {
-    acc[t.schf] = (acc[t.schf] || 0) + Math.abs(t.amount);
-    return acc;
-  }, {});
+  // Schedule F deduction per line = |net of the expense-class legs| + inventory-
+  // purchase legs. The two kinds are summed separately on purpose:
+  //   - Expense/Contribution legs are NETTED within a line first, so a refund
+  //     (a positive-amount expense leg, e.g. returned supplies) correctly REDUCES
+  //     that line instead of inflating it -- which a blanket Math.abs() per leg did.
+  //   - Inventory-purchase legs (positive) are then ADDED, not netted against the
+  //     expenses, so a Feed expense and an Inventory - Feed purchase on the same
+  //     line don't cancel; both are legitimate cash-basis deductions.
+  const schfExp = {}, schfInv = {};
+  schfTx.forEach(t => {
+    const bucket = t.cls === 'Inventory' ? schfInv : schfExp;
+    bucket[t.schf] = (bucket[t.schf] || 0) + t.amount;
+  });
+  const schfGroups = {};
+  new Set([...Object.keys(schfExp), ...Object.keys(schfInv)]).forEach(code => {
+    schfGroups[code] = Math.abs(schfExp[code] || 0) + (schfInv[code] || 0);
+  });
   const schfTotal = Object.values(schfGroups).reduce((s, v) => s + v, 0);
   // Reconciles Schedule F to the Expense Breakdown: inventory purchases carry
   // their Schedule F code at purchase (cash-basis deduction) but post to the
@@ -4507,6 +4521,77 @@ function showConfirm(message, opts = {}) {
   });
 }
 
+// Promise-based single-line text prompt that replaces the blocking prompt().
+// Resolves the trimmed string on confirm, or null on cancel/dismiss -- the same
+// contract as window.prompt(), so callers keep their `=== null` cancel checks.
+// opts: { title, message, placeholder, defaultValue, confirmLabel, cancelLabel }
+function showPrompt(message, opts = {}) {
+  return new Promise(resolve => {
+    let overlay = document.getElementById('prompt-modal');
+    if (!overlay) {
+      overlay = document.createElement('div');
+      overlay.id = 'prompt-modal';
+      overlay.className = 'modal-overlay';
+      overlay.style.zIndex = '900';
+      overlay.innerHTML =
+        '<div class="modal-box" style="width:min(460px,92vw)" role="dialog" aria-modal="true" aria-labelledby="prompt-title" aria-describedby="prompt-message">' +
+        '<h2 id="prompt-title"></h2><p id="prompt-message"></p>' +
+        '<div class="form-group" style="margin:4px 0 2px"><input type="text" id="prompt-input" aria-labelledby="prompt-message"></div>' +
+        '<div class="modal-actions">' +
+        '<button type="button" class="btn btn-secondary" id="prompt-cancel"></button>' +
+        '<button type="button" class="btn btn-primary" id="prompt-ok"></button>' +
+        '</div></div>';
+      document.body.appendChild(overlay);
+    }
+    const input = overlay.querySelector('#prompt-input');
+    const okBtn = overlay.querySelector('#prompt-ok');
+    const cancelBtn = overlay.querySelector('#prompt-cancel');
+    overlay.querySelector('#prompt-title').textContent = opts.title || 'Enter a value';
+    overlay.querySelector('#prompt-message').textContent = message;
+    input.placeholder = opts.placeholder || '';
+    input.value = opts.defaultValue || '';
+    okBtn.textContent = opts.confirmLabel || 'OK';
+    cancelBtn.textContent = opts.cancelLabel || 'Cancel';
+
+    let done = false;
+    const finish = result => {
+      if (done) return;
+      done = true;
+      document.removeEventListener('keydown', onKey, true);
+      okBtn.removeEventListener('click', onOk);
+      cancelBtn.removeEventListener('click', onCancel);
+      overlay.removeEventListener('mousedown', onBackdrop);
+      overlay.classList.remove('open');
+      modalClosed('prompt-modal');
+      resolve(result);
+    };
+    const onOk = () => finish(input.value.trim());
+    const onCancel = () => finish(null);
+    const onBackdrop = e => { if (e.target === overlay) finish(null); };
+    // Capture phase + stopPropagation so this wins over the global modal handler,
+    // mirroring showConfirm. Enter submits; Escape cancels; Tab is trapped.
+    const onKey = e => {
+      if (e.key === 'Enter' && document.activeElement === input) { e.preventDefault(); finish(input.value.trim()); }
+      else if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); finish(null); }
+      else if (e.key === 'Tab') {
+        e.stopPropagation();
+        const f = [input, cancelBtn, okBtn];
+        const first = f[0], last = f[f.length - 1];
+        if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+        else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+      }
+    };
+    okBtn.addEventListener('click', onOk);
+    cancelBtn.addEventListener('click', onCancel);
+    overlay.addEventListener('mousedown', onBackdrop);
+    document.addEventListener('keydown', onKey, true);
+    overlay.classList.add('open');
+    modalOpened('prompt-modal');
+    input.focus();
+    input.select();
+  });
+}
+
 function esc(str) {
   if (!str) return '';
   return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
@@ -4910,12 +4995,17 @@ function poReceive(id) {
   markUnsaved();
   renderPOs(); renderLedgerFull(); updateLedgerTiles();
 }
-function poBill(id) {
+async function poBill(id) {
   const po = purchaseOrders.find(p => p.id === id);
   if (!po || po.status !== 'Received') return;
-  const num = prompt('Vendor invoice / bill number (optional):', po.billNum || '');
-  if (num === null) return;
-  po.billNum = num.trim();
+  const num = await showPrompt('Vendor invoice / bill number (optional):', {
+    title: 'Record bill for ' + po.poNum,
+    defaultValue: po.billNum || '',
+    placeholder: 'e.g. INV-1234 (optional)',
+    confirmLabel: 'Save bill'
+  });
+  if (num === null) return;  // cancelled
+  po.billNum = num;
   po.billedDate = todayStr();
   po.status = 'Billed';
   markUnsaved();
@@ -5609,6 +5699,44 @@ function migrateToV3_4() {
     onTxTypeChange(); refreshInvLocationSelect();
   }
   console.log('V3.4 auto-migration (location backfill + rename):', result);
+}
+
+// =====================================================
+// V3.5 DATA MIGRATION: enforce the Schedule F invariant
+// A Schedule F code is a Part II farm-expense deduction, so it may live ONLY on
+// an Expense leg, a Contribution Expense leg, or an inventory *purchase* leg
+// (positive Inventory) -- that is exactly where the cash-basis deduction is taken.
+// It must be blank everywhere else. Older/imported data stranded codes on:
+//   - Inventory Used COGS legs (cls Other Expense) -> double deduction, since the
+//     input was already deducted when purchased; and
+//   - an Owner Draw leg (cls Owner Equity) -> a phantom deduction on money that
+//     never was a business expense.
+// Both overstate the Schedule F total and stop the reconciliation worksheet from
+// footing. This blanks schf on every leg outside the permitted set. Amounts and
+// classes are never touched, so re-running is idempotent. Subsumes V3.2 (which
+// only cleared Revenue legs); V3.2 is kept so pre-V3.5 backups still self-heal.
+// =====================================================
+function schfAllowed(t) {
+  return t.cls === 'Expense' || t.cls === 'Contribution Expense' || (t.cls === 'Inventory' && t.amount > 0);
+}
+function runMigration_v3_5() {
+  let schfStripped = 0;
+  transactions.forEach(t => {
+    if (t.schf && !schfAllowed(t)) { t.schf = ''; schfStripped++; }
+  });
+  return { schfStripped };
+}
+
+function migrateToV3_5() {
+  if (localStorage.getItem('sff_v3_5_migrated') === '1') return;
+  const result = runMigration_v3_5();
+  localStorage.setItem('sff_v3_5_migrated', '1');
+  if (result.schfStripped > 0) {
+    saveToStorage();
+    gdriveMarkDirty();  // corrected local data; surface a "Save to Drive" prompt
+    renderLedgerFull(); updateLedgerTiles(); renderDashboard();
+  }
+  console.log('V3.5 auto-migration (Schedule F invariant):', result);
 }
 
 // Surface likely-duplicate data. Two signals of different confidence:
