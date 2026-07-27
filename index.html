@@ -349,7 +349,7 @@ tbody td { padding: 8px 12px; color: var(--text); vertical-align: middle; }
     <p>Finance Records</p>
   </button>
   <div class="header-right">
-    <button class="unsaved-badge" id="unsaved-badge" onclick="exportFarmBackup()" title="Click to back up all farm data">Back Up Now</button>
+    <button class="unsaved-badge" id="unsaved-badge" onclick="saveNow()" title="Click to back up all farm data">Back Up Now</button>
   </div>
 </header>
 
@@ -1565,6 +1565,27 @@ function buildBackupPayload() {
   };
 }
 
+// Header save badge router: when Google Drive is connected the badge saves to
+// the cloud (the primary sync target); otherwise it falls back to a JSON
+// download. Keeps the one-click "save my work" action pointed at the right place.
+function saveNow() {
+  if (gdriveConnected()) gdrivePush();
+  else exportFarmBackup();
+}
+
+// Keep the header badge's wording in step with the active save target.
+function updateSaveBadgeLabel() {
+  const badge = document.getElementById('unsaved-badge');
+  if (!badge) return;
+  if (gdriveConnected()) {
+    badge.textContent = 'Save to Drive';
+    badge.title = 'Click to save all farm data to Google Drive';
+  } else {
+    badge.textContent = 'Back Up Now';
+    badge.title = 'Click to back up all farm data';
+  }
+}
+
 function exportFarmBackup() {
   const now = new Date();
   const payload = buildBackupPayload();
@@ -1938,6 +1959,7 @@ function gdriveRenderPanel() {
   const actions = document.getElementById('gdrive-actions');
   if (connectBtn) connectBtn.style.display = connected ? 'none' : '';
   if (actions) actions.style.display = connected ? '' : 'none';
+  updateSaveBadgeLabel();
   if (connected) {
     const base = gdriveBaseRev();
     gdriveSetStatus(base ? ('Connected. Last synced rev ' + base + (gdriveDirty() ? ' — unsaved changes.' : '.')) : 'Connected.');
@@ -1983,6 +2005,7 @@ function markUnsaved() {
   hasUnsaved = true;
   saveToStorage();
   gdriveMarkDirty();
+  updateSaveBadgeLabel();
   document.getElementById('unsaved-badge').classList.add('visible');
   scheduleDashboard();
 }
