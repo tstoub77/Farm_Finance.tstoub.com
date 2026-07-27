@@ -1107,13 +1107,13 @@ tbody td { padding: 8px 12px; color: var(--text); vertical-align: middle; }
 //   BACKUP_SCHEMA_VERSION  Shape of the exported backup JSON. Bump ONLY when the
 //                          backup structure changes; importFarmBackup() reads a
 //                          backup's `version` to decide which migrations to re-run.
-//   Migration level        The one-time data migrations (migrateToV3 … V3_5),
+//   Migration level        The one-time data migrations (migrateToV3 … V3_6),
 //                          guarded by permanent `sff_v3_x_migrated` localStorage
 //                          flags. Never rename those keys — it would silently
 //                          re-run every migration on load. This counter is
 //                          intentionally decoupled from APP_VERSION.
 // =====================================================
-const APP_VERSION = '7.9';
+const APP_VERSION = '7.10';
 const BACKUP_SCHEMA_VERSION = 4;
 
 // =====================================================
@@ -1556,6 +1556,7 @@ function loadFromStorage() {
   migrateToV3_3();
   migrateToV3_4();
   migrateToV3_5();
+  migrateToV3_6();
 }
 
 // =====================================================
@@ -1694,6 +1695,9 @@ function applyBackupPayload(data) {
   // Always re-enforce the Schedule F invariant on restore -- older backups
   // carried codes stranded on COGS and equity legs that overstate the deduction.
   localStorage.removeItem('sff_v3_5_migrated');
+  // Always re-canonicalize Schedule F codes on restore -- older backups stored
+  // category names (e.g. "Marketing") where a canonical line belongs.
+  localStorage.removeItem('sff_v3_6_migrated');
   saveToStorage();
   migrateToV3();
   migrateToV3_1();
@@ -1701,6 +1705,7 @@ function applyBackupPayload(data) {
   migrateToV3_3();
   migrateToV3_4();
   migrateToV3_5();
+  migrateToV3_6();
   renderAll();
 }
 
@@ -5760,6 +5765,41 @@ function migrateToV3_5() {
     renderLedgerFull(); updateLedgerTiles(); renderDashboard();
   }
   console.log('V3.5 auto-migration (Schedule F invariant):', result);
+}
+
+// =====================================================
+// V3.6 DATA MIGRATION: canonicalize Schedule F codes
+// A leg's schf should hold a real Schedule F line, but legacy/imported data
+// sometimes stored the expense *category name* instead (e.g. "Marketing" rather
+// than "Other: Marketing"), which splits that line in two on the report. Rewrite
+// any schf that is a SCHEDULE_F_MAP key mapping to a DIFFERENT, non-empty
+// canonical line. Keys that map to themselves (Feed, Insurance) and values that
+// aren't map keys (already-canonical lines) are left untouched, so re-running is
+// idempotent. Generic on purpose: also catches future same-shape typos.
+// =====================================================
+function runMigration_v3_6() {
+  let schfCanonicalized = 0;
+  transactions.forEach(t => {
+    if (!t.schf) return;
+    const canonical = SCHEDULE_F_MAP[t.schf];
+    if (canonical !== undefined && canonical !== '' && canonical !== t.schf) {
+      t.schf = canonical;
+      schfCanonicalized++;
+    }
+  });
+  return { schfCanonicalized };
+}
+
+function migrateToV3_6() {
+  if (localStorage.getItem('sff_v3_6_migrated') === '1') return;
+  const result = runMigration_v3_6();
+  localStorage.setItem('sff_v3_6_migrated', '1');
+  if (result.schfCanonicalized > 0) {
+    saveToStorage();
+    gdriveMarkDirty();  // corrected local data; surface a "Save to Drive" prompt
+    renderLedgerFull(); updateLedgerTiles(); renderDashboard();
+  }
+  console.log('V3.6 auto-migration (Schedule F canonicalization):', result);
 }
 
 // Surface likely-duplicate data. Two signals of different confidence:
