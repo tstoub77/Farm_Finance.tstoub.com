@@ -1971,6 +1971,16 @@ function gdriveRenderPanel() {
   if (connectBtn) connectBtn.style.display = connected ? 'none' : '';
   if (actions) actions.style.display = connected ? '' : 'none';
   updateSaveBadgeLabel();
+  // Reflect persisted unsaved state in the header badge. The dirty flag can be
+  // set outside a live edit -- e.g. a data migration on load, or a prior session
+  // that changed data but never pushed -- and gdriveMarkDirty() only sets the
+  // flag, it doesn't reveal the badge. Surface it here so "Save to Drive" shows
+  // on load whenever there is something to push.
+  // When connected, the dirty flag is the source of truth for "something to
+  // push," so keep the badge in lockstep with it. When disconnected we leave the
+  // badge alone -- the local backup flow (hasUnsaved) governs it there.
+  const badge = document.getElementById('unsaved-badge');
+  if (badge && connected) badge.classList.toggle('visible', gdriveDirty());
   if (connected) {
     const base = gdriveBaseRev();
     gdriveSetStatus(base ? ('Connected. Last synced rev ' + base + (gdriveDirty() ? ' — unsaved changes.' : '.')) : 'Connected.');
