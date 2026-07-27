@@ -1307,6 +1307,16 @@ const SCHEDULE_F_MAP = {
 
 const ALL_SCHEDULE_F = ['','Car and truck expenses','Chemicals','Custom hire (contractor)','Feed','Fertilizer and lime','Freight and trucking','Gasoline, fuel, and oil','Insurance','Interest','Rent or lease','Repairs and maintenance','Seeds and plants purchased','Storage and warehousing','Supplies purchased','Taxes','Utilities','Other: Marketing','Other: Office Space','Other: Office Supplies','Other: Professional Fees'];
 
+// Reused classification groupings and period helpers. Kept as single sources so a
+// change (e.g. a new expense class) doesn't have to be chased through the file.
+// The three P&L expense classes; used everywhere revenue/expense totals are summed.
+const EXPENSE_CLASSES = ['Expense', 'Other Expense', 'Contribution Expense'];
+// Calendar months per quarter, quarter 1 at index 0.
+const QUARTER_MONTHS = [[1, 2, 3], [4, 5, 6], [7, 8, 9], [10, 11, 12]];
+// Year-End Close rows are excluded from P&L figures so closed years still report
+// their true revenue/expense/net (the closing entry itself nets to retained earnings).
+const notYEC = t => t.txType !== 'Year-End Close';
+
 // =====================================================
 // FARM IDENTITY
 // =====================================================
@@ -1354,6 +1364,24 @@ function saveFarmIdentity() {
 // =====================================================
 // INIT
 // =====================================================
+// Re-render every view from current in-memory state. Shared by init() and any
+// bulk data swap (backup restore, Drive pull) so a single call keeps all tabs,
+// tiles, and headers in sync.
+function renderAll() {
+  renderLedgerFull();
+  renderMileage();
+  renderMarket();
+  renderInvoices();
+  renderPOs();
+  updateLedgerTiles();
+  renderDashboard();
+  renderLocationSettings();
+  renderContactSettings();
+  checkTaxBanner();
+  applyFarmIdentityToUI();
+  loadFarmIdentityFields();
+}
+
 function init() {
   document.getElementById('tx-date').value = todayStr();
   document.getElementById('mi-date').value = todayStr();
@@ -1375,18 +1403,7 @@ function init() {
   resetInvoiceForm();
   resetPOForm();
 
-  renderLedgerFull();
-  renderMileage();
-  renderMarket();
-  renderInvoices();
-  renderPOs();
-  updateLedgerTiles();
-  renderDashboard();
-  renderLocationSettings();
-  renderContactSettings();
-  checkTaxBanner();
-  applyFarmIdentityToUI();
-  loadFarmIdentityFields();
+  renderAll();
   document.getElementById('about-app-version').textContent = 'v' + APP_VERSION;
   document.getElementById('about-backup-version').textContent = BACKUP_SCHEMA_VERSION;
   gdriveInitOnLoad();
@@ -1491,9 +1508,9 @@ function saveToStorage() {
     if (_saveFailAlerted) {
       const badge = document.getElementById('unsaved-badge');
       if (badge) {
-        badge.textContent = 'Back Up Now';
         badge.style.background = '';
         badge.classList.remove('visible');
+        updateSaveBadgeLabel();  // respects Drive-connected "Save to Drive" wording
       }
       _saveFailAlerted = false;
     }
@@ -1681,18 +1698,7 @@ function applyBackupPayload(data) {
   migrateToV3_2();
   migrateToV3_3();
   migrateToV3_4();
-  renderLedgerFull();
-  renderMileage();
-  renderMarket();
-  renderInvoices();
-  renderPOs();
-  updateLedgerTiles();
-  renderDashboard();
-  renderLocationSettings();
-  renderContactSettings();
-  checkTaxBanner();
-  applyFarmIdentityToUI();
-  loadFarmIdentityFields();
+  renderAll();
 }
 
 // =====================================================
@@ -2238,9 +2244,8 @@ function updateLedgerTiles() {
   const checking = transactions.filter(t => t.cat === 'Cash - Checking').reduce((s, t) => s + t.amount, 0);
 
   const ytdYear = new Date().getFullYear();
-  const notYEC = t => t.txType !== 'Year-End Close';
   const ytdRev = transactions.filter(t => t.cls === 'Revenue' && notYEC(t) && t.date.startsWith(String(ytdYear))).reduce((s, t) => s + t.amount, 0);
-  const ytdExp = transactions.filter(t => ['Expense','Other Expense','Contribution Expense'].includes(t.cls) && notYEC(t) && t.date.startsWith(String(ytdYear))).reduce((s, t) => s + t.amount, 0);
+  const ytdExp = transactions.filter(t => EXPENSE_CLASSES.includes(t.cls) && notYEC(t) && t.date.startsWith(String(ytdYear))).reduce((s, t) => s + t.amount, 0);
   const net = ytdRev + ytdExp;
 
   document.getElementById('tile-checking').textContent = fmtDollar(checking);
@@ -2283,8 +2288,8 @@ function renderDashboard() {
   // live all-time balance (matches the ledger tile); for a prior year show the
   // balance as of that Dec 31 so the snapshot reflects the year being viewed.
   const checking = transactions.filter(t => t.cat === 'Cash - Checking' && (isCurrent || t.date <= `${yStr}-12-31`)).reduce((s,t) => s + t.amount, 0);
-  const revenue  = ytd.filter(t => t.cls === 'Revenue' && t.txType !== 'Year-End Close').reduce((s,t) => s + t.amount, 0);
-  const expenses = ytd.filter(t => ['Expense','Other Expense','Contribution Expense'].includes(t.cls) && t.txType !== 'Year-End Close').reduce((s,t) => s + t.amount, 0);
+  const revenue  = ytd.filter(t => t.cls === 'Revenue' && notYEC(t)).reduce((s,t) => s + t.amount, 0);
+  const expenses = ytd.filter(t => EXPENSE_CLASSES.includes(t.cls) && notYEC(t)).reduce((s,t) => s + t.amount, 0);
   const net      = revenue + expenses;
 
   // Sales tax owed for the selected year (collected net of that year's payments)
@@ -2344,7 +2349,7 @@ function renderDashboard() {
   // Sales tax by quarter
   const taxEl = document.getElementById('dash-tax');
   const quarters = ['Q1 (Jan-Mar)','Q2 (Apr-Jun)','Q3 (Jul-Sep)','Q4 (Oct-Dec)'];
-  const qMonths  = [[1,2,3],[4,5,6],[7,8,9],[10,11,12]];
+  const qMonths  = QUARTER_MONTHS;
   const taxRows = quarters.map((label, qi) => {
     const months = qMonths[qi];
     const collected = transactions.filter(t => {
@@ -2541,8 +2546,7 @@ function getFilteredTransactions() {
     if (yr && !t.date.startsWith(yr)) return false;
     if (q) {
       const m = parseInt(t.date.substring(5, 7));
-      const qs = [0,[1,2,3],[4,5,6],[7,8,9],[10,11,12]];
-      if (!qs[parseInt(q)].includes(m)) return false;
+      if (!QUARTER_MONTHS[parseInt(q)-1].includes(m)) return false;
     }
     if (cls && t.cls !== cls) return false;
     if (kw && !t.desc.toLowerCase().includes(kw) && !(t.notes||'').toLowerCase().includes(kw)) return false;
@@ -2599,11 +2603,6 @@ function fmtAmt(v) {
 function fmtDollar(v) {
   const abs = Math.abs(v).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
   return (v < 0 ? '($' : '$') + abs + (v < 0 ? ')' : '');
-}
-
-function fmtPos(v) {
-  // Always positive display, no parens
-  return '$' + Math.abs(v).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
 
 function fmtDate(d) {
@@ -2918,7 +2917,7 @@ function calcMileage() {
   const miles = parseFloat(document.getElementById('mi-miles').value) || 0;
   const vehicles = parseInt(document.getElementById('mi-vehicles').value) || 1;
   const total = miles * vehicles * mileageRate;
-  document.getElementById('mi-calc').textContent = fmtPos(total);
+  document.getElementById('mi-calc').textContent = fmt$(total);
 }
 
 function addMileage() {
@@ -3009,7 +3008,7 @@ function renderMileage() {
 
   const filterYear = yearSel ? yearSel.value : '';
   const filterQ = qSel ? parseInt(qSel.value) : 0;
-  const qMonths = filterQ ? [[1,2,3],[4,5,6],[7,8,9],[10,11,12]][filterQ-1] : null;
+  const qMonths = filterQ ? QUARTER_MONTHS[filterQ-1] : null;
 
   const filtered = mileageLog.filter(m => {
     if (filterYear && !m.date.startsWith(filterYear)) return false;
@@ -3030,14 +3029,14 @@ function renderMileage() {
       <td>${(m.miles * m.vehicles).toFixed(1)}</td>
       <td>${m.vehicles}</td>
       <td>$${m.rate}</td>
-      <td><span class="amount-neg">(${fmtPos(m.expense)})</span></td>
+      <td><span class="amount-neg">(${fmt$(m.expense)})</span></td>
       <td><button class="btn btn-danger btn-sm" aria-label="Delete mileage trip ${fmtDate(m.date)} ${esc(m.location)}" onclick="deleteMileage(${m.miId})">&#x2715;</button></td>
     </tr>`).join('');
   }
   const totalMiles = filtered.reduce((s, m) => s + m.miles * m.vehicles, 0);
   const totalExp = filtered.reduce((s, m) => s + m.expense, 0);
   document.getElementById('tile-miles').textContent = totalMiles.toFixed(1);
-  document.getElementById('tile-mi-expense').textContent = fmtPos(totalExp);
+  document.getElementById('tile-mi-expense').textContent = fmt$(totalExp);
   document.getElementById('tile-trips').textContent = filtered.length;
 }
 
@@ -3121,16 +3120,12 @@ function generateReport() {
     const dt = new Date(d + 'T00:00:00');
     if (dt.getFullYear() !== year) return false;
     if (period === 'annual') return true;
-    const qs = [0,[1,2,3],[4,5,6],[7,8,9],[10,11,12]];
-    return qs[parseInt(period)].includes(dt.getMonth() + 1);
+    return QUARTER_MONTHS[parseInt(period)-1].includes(dt.getMonth() + 1);
   }
 
-  // Year-End Close entries are excluded from P&L figures so closed years
-  // still report their true revenue, expenses, and net.
-  const notYEC = t => t.txType !== 'Year-End Close';
   const filtered = transactions.filter(t => inPeriod(t.date));
   const revenue = filtered.filter(t => t.cls === 'Revenue' && notYEC(t));
-  const expenses = filtered.filter(t => ['Expense','Other Expense','Contribution Expense'].includes(t.cls) && notYEC(t));
+  const expenses = filtered.filter(t => EXPENSE_CLASSES.includes(t.cls) && notYEC(t));
   const totalRev = revenue.reduce((s, t) => s + t.amount, 0);
   const totalExp = expenses.reduce((s, t) => s + t.amount, 0);
   const net = totalRev + totalExp;
@@ -3174,7 +3169,7 @@ function generateReport() {
   // earnings + only the open period net. Excluding it would double count
   // closed years, since retained already carries that value.
   const allRevenue = transactions.filter(t => t.cls==='Revenue').reduce((s,t) => s+t.amount, 0);
-  const allExpenses = transactions.filter(t => ['Expense','Other Expense','Contribution Expense'].includes(t.cls)).reduce((s,t) => s+t.amount, 0);
+  const allExpenses = transactions.filter(t => EXPENSE_CLASSES.includes(t.cls)).reduce((s,t) => s+t.amount, 0);
   const netAll = allRevenue + allExpenses;
   const retailTax = transactions.filter(t => t.cat==='Retail Tax').reduce((s,t) => s+t.amount, 0);
   const bankLoan = transactions.filter(t => t.cat==='Bank Loan').reduce((s,t) => s+t.amount, 0);
@@ -3247,7 +3242,7 @@ function generateReport() {
   <div class="report-section">
     <h3>Net Income (P&amp;L)</h3>
     <div class="pnl-result ${net>=0?'pnl-positive':'pnl-negative'}">
-      ${net>=0 ? '+'+fmtPos(net) : '('+fmtPos(net)+')'}
+      ${net>=0 ? '+'+fmt$(net) : '('+fmt$(net)+')'}
     </div>
   </div>`;
 
@@ -3423,7 +3418,7 @@ function printMileage() {
   const qSel = document.getElementById('mi-filter-quarter');
   const filterYear = yearSel ? yearSel.value : '';
   const filterQ = qSel ? parseInt(qSel.value) : 0;
-  const qMonths = filterQ ? [[1,2,3],[4,5,6],[7,8,9],[10,11,12]][filterQ-1] : null;
+  const qMonths = filterQ ? QUARTER_MONTHS[filterQ-1] : null;
   const filtered = mileageLog.filter(m => {
     if (filterYear && !m.date.startsWith(filterYear)) return false;
     if (qMonths) { const mo = parseInt(m.date.substring(5,7)); if (!qMonths.includes(mo)) return false; }
@@ -3929,9 +3924,9 @@ function openYearEnd() {
   const yr = parseInt(yrInput.value);
   // Show the modal regardless; populate preview if year is valid, otherwise show placeholder
   if (!isNaN(yr) && yr >= 2000 && yr <= 2099) {
-    const yearTx = transactions.filter(t => t.date.startsWith(String(yr)) && t.txType !== 'Year-End Close');
+    const yearTx = transactions.filter(t => t.date.startsWith(String(yr)) && notYEC(t));
     const allRev = yearTx.filter(t => t.cls === 'Revenue').reduce((s,t) => s+t.amount, 0);
-    const allExp = yearTx.filter(t => ['Expense','Other Expense','Contribution Expense'].includes(t.cls)).reduce((s,t) => s+t.amount, 0);
+    const allExp = yearTx.filter(t => EXPENSE_CLASSES.includes(t.cls)).reduce((s,t) => s+t.amount, 0);
     const net = allRev + allExp;
     const alreadyClosed = transactions.some(t => t.txType === 'Year-End Close' && t.date === `${yr}-12-31`);
     document.getElementById('yearend-data').innerHTML = `
@@ -3960,9 +3955,9 @@ async function runYearEnd() {
     if (!(await showConfirm(`A Year-End Close entry already exists for ${yr}. Running it again will create a duplicate.`, { title: 'Close already exists', confirmLabel: 'Run anyway' }))) return;
   }
   // Exclude prior Year-End Close entries from the net so rolling twice does not compound
-  const yearTx = transactions.filter(t => t.date.startsWith(String(yr)) && t.txType !== 'Year-End Close');
+  const yearTx = transactions.filter(t => t.date.startsWith(String(yr)) && notYEC(t));
   const allRev = yearTx.filter(t => t.cls === 'Revenue').reduce((s,t) => s+t.amount, 0);
-  const allExp = yearTx.filter(t => ['Expense','Other Expense','Contribution Expense'].includes(t.cls)).reduce((s,t) => s+t.amount, 0);
+  const allExp = yearTx.filter(t => EXPENSE_CLASSES.includes(t.cls)).reduce((s,t) => s+t.amount, 0);
   const net = allRev + allExp;
 
   if (net === 0) { showToast('Net income is zero for ' + yr + '. Nothing to close.', 'error'); return; }
@@ -4093,9 +4088,9 @@ function renderMarket() {
   tbody.innerHTML = marketLog.map(m => `<tr>
     <td>${fmtDate(m.date)}</td>
     <td>${esc(m.location)}</td>
-    <td>${fmtPos(m.cash)}</td>
-    <td>${fmtPos(m.card)}</td>
-    <td><strong>${fmtPos(m.cash+m.card)}</strong></td>
+    <td>${fmt$(m.cash)}</td>
+    <td>${fmt$(m.card)}</td>
+    <td><strong>${fmt$(m.cash+m.card)}</strong></td>
     <td style="font-size:0.8rem;color:var(--text-muted)">${esc(m.notes||'')}</td>
     <td><button class="btn btn-danger btn-sm" aria-label="Delete market day ${fmtDate(m.date)}" onclick="deleteMarketDay(${m.id})">&#x2715;</button></td>
   </tr>`).join('');
@@ -4109,9 +4104,9 @@ function renderMarketTrends() {
   const best = days ? marketLog.reduce((b,m) => (m.cash+m.card > b.cash+b.card ? m : b), marketLog[0]) : null;
 
   document.getElementById('market-tiles').innerHTML = `
-    <div class="tile"><span class="tile-value">${fmtPos(totalCash)}</span><span class="tile-label">Total Cash</span></div>
-    <div class="tile"><span class="tile-value">${fmtPos(totalCard)}</span><span class="tile-label">Total Card</span></div>
-    <div class="tile"><span class="tile-value">${fmtPos(total)}</span><span class="tile-label">Total Revenue</span></div>
+    <div class="tile"><span class="tile-value">${fmt$(totalCash)}</span><span class="tile-label">Total Cash</span></div>
+    <div class="tile"><span class="tile-value">${fmt$(totalCard)}</span><span class="tile-label">Total Card</span></div>
+    <div class="tile"><span class="tile-value">${fmt$(total)}</span><span class="tile-label">Total Revenue</span></div>
     <div class="tile"><span class="tile-value">${days}</span><span class="tile-label">Market Days</span></div>`;
 
   const byLoc = {};
@@ -4125,20 +4120,20 @@ function renderMarketTrends() {
   let html = `<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:14px;margin:16px 0">
     <div class="card" style="margin:0">
       <div class="card-title" style="font-size:0.85rem">Per-Market Averages</div>
-      <p style="font-size:0.9rem">Avg Cash: <strong>${fmtPos(totalCash/Math.max(days,1))}</strong></p>
-      <p style="font-size:0.9rem;margin-top:4px">Avg Card: <strong>${fmtPos(totalCard/Math.max(days,1))}</strong></p>
-      <p style="font-size:0.9rem;margin-top:4px">Avg Total: <strong>${fmtPos(total/Math.max(days,1))}</strong></p>
+      <p style="font-size:0.9rem">Avg Cash: <strong>${fmt$(totalCash/Math.max(days,1))}</strong></p>
+      <p style="font-size:0.9rem;margin-top:4px">Avg Card: <strong>${fmt$(totalCard/Math.max(days,1))}</strong></p>
+      <p style="font-size:0.9rem;margin-top:4px">Avg Total: <strong>${fmt$(total/Math.max(days,1))}</strong></p>
     </div>
     ${best ? `<div class="card" style="margin:0">
       <div class="card-title" style="font-size:0.85rem">Best Market Day</div>
       <p style="font-size:0.9rem">${fmtDate(best.date)} | ${esc(best.location)}</p>
-      <p style="font-size:0.9rem;margin-top:4px;color:var(--green-mid);font-weight:700">${fmtPos(best.cash+best.card)}</p>
+      <p style="font-size:0.9rem;margin-top:4px;color:var(--green-mid);font-weight:700">${fmt$(best.cash+best.card)}</p>
     </div>` : ''}
   </div>`;
 
   if (Object.keys(byLoc).length > 1) {
     html += `<table class="report-table"><thead><tr><th>Location</th><th style="text-align:right">Days</th><th style="text-align:right">Cash</th><th style="text-align:right">Card</th><th style="text-align:right">Total</th></tr></thead><tbody>
-      ${Object.entries(byLoc).map(([loc,d]) => `<tr><td>${esc(loc)}</td><td style="text-align:right">${d.days}</td><td style="text-align:right">${fmtPos(d.cash)}</td><td style="text-align:right">${fmtPos(d.card)}</td><td style="text-align:right"><strong>${fmtPos(d.cash+d.card)}</strong></td></tr>`).join('')}
+      ${Object.entries(byLoc).map(([loc,d]) => `<tr><td>${esc(loc)}</td><td style="text-align:right">${d.days}</td><td style="text-align:right">${fmt$(d.cash)}</td><td style="text-align:right">${fmt$(d.card)}</td><td style="text-align:right"><strong>${fmt$(d.cash+d.card)}</strong></td></tr>`).join('')}
     </tbody></table>`;
   }
 
@@ -5122,9 +5117,9 @@ function periodBounds(year, period) {
 }
 function periodTotals(year, period) {
   const [s, e] = periodBounds(year, period);
-  const f = transactions.filter(t => t.date >= s && t.date <= e && t.txType !== 'Year-End Close');
+  const f = transactions.filter(t => t.date >= s && t.date <= e && notYEC(t));
   const rev = f.filter(t => t.cls === 'Revenue').reduce((a, t) => a + t.amount, 0);
-  const exp = f.filter(t => ['Expense', 'Other Expense', 'Contribution Expense'].includes(t.cls)).reduce((a, t) => a + t.amount, 0);
+  const exp = f.filter(t => EXPENSE_CLASSES.includes(t.cls)).reduce((a, t) => a + t.amount, 0);
   return { rev, exp: Math.abs(exp), net: rev + exp };
 }
 function buildComparatives(period, year, totalRev, totalExp, net) {
@@ -5255,7 +5250,6 @@ function buildReceivablesAging() {
   const buckets = { 'Current': 0, '1-30': 0, '31-60': 0, '61-90': 0, 'Over 90': 0 };
   let total = 0;
   open.forEach(i => { const d = i.due ? daysBetween(i.due) : 0; buckets[agingBucket(d)] += i.total; total += i.total; });
-  const cells = Object.entries(buckets).map(([k, v]) => `<td style="text-align:right">${fmt$(v)}</td>`).join('');
   return `<div class="report-section">
     <h3>Accounts Receivable Aging</h3>
     <table class="report-table">
