@@ -1113,7 +1113,7 @@ tbody td { padding: 8px 12px; color: var(--text); vertical-align: middle; }
 //                          re-run every migration on load. This counter is
 //                          intentionally decoupled from APP_VERSION.
 // =====================================================
-const APP_VERSION = '7.10';
+const APP_VERSION = '7.11';
 const BACKUP_SCHEMA_VERSION = 4;
 
 // =====================================================
@@ -3315,6 +3315,33 @@ function generateReport() {
       </table>
     </div>`;
   }
+
+  // Performance margins on three expense bases, so the as-filed figure and the
+  // operating figure can be read against the book number in one place. Sign
+  // convention: totalExp is negative, schfTotal and invUsedCOGS are positive.
+  //   - Schedule F (as filed): revenue less Schedule F deductions (inventory
+  //     deducted when PAID, COGS excluded). Matches the return.
+  //   - Operating (inventory excluded): revenue less book operating expenses
+  //     with all inventory/COGS stripped -- isolates operating performance.
+  //   - Book Net Income: the headline P&L above, repeated for comparison.
+  // Revenue is common to all three; the tool records income on a cash basis, so
+  // only the expense side is re-based here.
+  const schfNet = totalRev - schfTotal;
+  const opExpenses = Math.abs(totalExp) - invUsedCOGS;
+  const opMargin = totalRev - opExpenses;
+  const marginPct = v => totalRev ? (v / totalRev * 100).toFixed(1) + '%' : '—';
+  html += `<div class="report-section">
+    <h3>Performance Margins</h3>
+    <p class="schf-note">Three views of the same period on different expense bases. <strong>Schedule F</strong> is the P&amp;L as it lands on your return (inventory deducted when paid, COGS excluded). <strong>Operating</strong> strips all inventory &amp; COGS to isolate operating performance. <strong>Book</strong> is the headline Net Income above. All three use this period's revenue of ${fmt$(totalRev)}. Reference only &mdash; verify with your tax preparer.</p>
+    <table class="report-table">
+      <thead><tr><th>Basis</th><th style="text-align:right">Expenses</th><th style="text-align:right">Net</th><th style="text-align:right">Margin</th></tr></thead>
+      <tbody>
+        <tr><td>Net Farm Profit (Schedule F basis, as filed)</td><td style="text-align:right">${fmt$(schfTotal)}</td><td style="text-align:right" class="${schfNet>=0?'amount-pos':'amount-neg'}">${fmtDollar(schfNet)}</td><td style="text-align:right">${marginPct(schfNet)}</td></tr>
+        <tr><td>Operating Margin (inventory excluded)</td><td style="text-align:right">${fmt$(opExpenses)}</td><td style="text-align:right" class="${opMargin>=0?'amount-pos':'amount-neg'}">${fmtDollar(opMargin)}</td><td style="text-align:right">${marginPct(opMargin)}</td></tr>
+        <tr><td>Book Net Income (all expenses, as incurred/used)</td><td style="text-align:right">${fmt$(Math.abs(totalExp))}</td><td style="text-align:right" class="${net>=0?'amount-pos':'amount-neg'}">${fmtDollar(net)}</td><td style="text-align:right">${marginPct(net)}</td></tr>
+      </tbody>
+    </table>
+  </div>`;
 
   if (miFiltered.length) {
     const miMiles = miFiltered.reduce((s,m) => s + m.miles * m.vehicles, 0);
