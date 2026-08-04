@@ -1107,13 +1107,13 @@ tbody td { padding: 8px 12px; color: var(--text); vertical-align: middle; }
 //   BACKUP_SCHEMA_VERSION  Shape of the exported backup JSON. Bump ONLY when the
 //                          backup structure changes; importFarmBackup() reads a
 //                          backup's `version` to decide which migrations to re-run.
-//   Migration level        The one-time data migrations (migrateToV3 … V3_6),
+//   Migration level        The one-time data migrations (migrateToV3 … V3_7),
 //                          guarded by permanent `sff_v3_x_migrated` localStorage
 //                          flags. Never rename those keys — it would silently
 //                          re-run every migration on load. This counter is
 //                          intentionally decoupled from APP_VERSION.
 // =====================================================
-const APP_VERSION = '7.11';
+const APP_VERSION = '7.12';
 const BACKUP_SCHEMA_VERSION = 4;
 
 // =====================================================
@@ -1204,24 +1204,31 @@ const TX_TYPES = {
     ]
   },
   'Inventory Purchase': {
-    hint: 'You buy inventory. Checking goes down, inventory goes up.',
+    hint: 'You buy inventory. Checking goes down, inventory goes up. No Schedule F deduction here — a production input is deducted when RELEASED (Inventory Used), so its cost matches the season it earns revenue.',
     categories: ['Inventory - Feed','Inventory - Grain','Inventory - Plants','Inventory - Seeds','Inventory - Supplies','Inventory - Resale'],
     defaultCls: 'Inventory',
+    noSchf: true,
     postings: (amt, cat) => [
-      { cat, cls: 'Inventory', amt: amt },
+      // Purchase carries NO Schedule F code: under the inventory/COGS method the
+      // deduction is taken on release (Inventory Used), not at purchase.
+      { cat, cls: 'Inventory', amt: amt, schf: '' },
       { cat: 'Cash - Checking', cls: 'Asset', amt: -amt }
     ]
   },
   'Inventory Used': {
-    hint: 'Inventory consumed or sold. Resale goes to COGS - Resale; production inputs go to COGS Production. The Schedule F deduction was already taken when the inventory was purchased, so usage posts no Schedule F code.',
+    hint: 'Inventory released to a crop or sold. Resale goes to COGS - Resale; production inputs go to COGS Production. This is where a purchased production input takes its Schedule F deduction (mapped from the inventory category) — date it to the period the crop is sold. Raised output (grain) and resale goods carry no Part II code.',
     categories: ['Inventory - Feed','Inventory - Grain','Inventory - Plants','Inventory - Seeds','Inventory - Supplies','Inventory - Resale'],
     defaultCls: 'Inventory',
     showQty: true,
     noSchf: true,
     postings: (amt, cat) => [
-      { cat: cat === 'Inventory - Resale' ? 'COGS - Resale' : 'COGS Production', cls: 'Other Expense', amt: -amt },
-      // schf stays empty on the reduction leg. Tagging it would net against the
-      // positive purchase leg in the Schedule F report and shrink the deduction.
+      // The COGS release leg carries the Schedule F deduction, mapped from the
+      // inventory category. SCHEDULE_F_MAP returns '' for raised output
+      // (Inventory - Grain) and resale goods (Inventory - Resale), so those
+      // release with no Part II code -- resale is recovered via cost of goods
+      // sold and a raised crop has no separate deductible basis.
+      { cat: cat === 'Inventory - Resale' ? 'COGS - Resale' : 'COGS Production', cls: 'Other Expense', amt: -amt, schf: SCHEDULE_F_MAP[cat] || '' },
+      // The inventory reduction leg is an asset movement only -- never a deduction.
       { cat, cls: 'Inventory', amt: -amt, schf: '' }
     ]
   },
@@ -1557,6 +1564,7 @@ function loadFromStorage() {
   migrateToV3_4();
   migrateToV3_5();
   migrateToV3_6();
+  migrateToV3_7();
 }
 
 // =====================================================
@@ -1698,6 +1706,9 @@ function applyBackupPayload(data) {
   // Always re-canonicalize Schedule F codes on restore -- older backups stored
   // category names (e.g. "Marketing") where a canonical line belongs.
   localStorage.removeItem('sff_v3_6_migrated');
+  // Always re-run the purchase->release move on restore -- a pre-V3.7 backup
+  // deducted inventory at purchase; re-map it to the inventory/COGS method.
+  localStorage.removeItem('sff_v3_7_migrated');
   saveToStorage();
   migrateToV3();
   migrateToV3_1();
@@ -1706,6 +1717,7 @@ function applyBackupPayload(data) {
   migrateToV3_4();
   migrateToV3_5();
   migrateToV3_6();
+  migrateToV3_7();
   renderAll();
 }
 
@@ -3150,49 +3162,39 @@ function generateReport() {
 
   const revByCat = groupSum(revenue, 'cat');
   const expByCat = groupSum(expenses, 'cat', true);
-  // Cash-basis Schedule F recognition splits by leg kind:
-  //   - Expense/Contribution legs are deducted when INCURRED (their own date), so
-  //     they come straight from `filtered`.
-  //   - An inventory purchase is deducted when PAID, not when received. A manual
-  //     Inventory Purchase pays on the spot (receive date == pay date), but a PO
-  //     can be received in one period and paid in another -- its deduction belongs
-  //     to the payment period, and a received-but-unpaid PO is not deducted yet.
-  //     So inventory-purchase legs are recognized by their PO's payment date,
-  //     falling back to the leg's own date for non-PO (manual) purchases.
-  const poPayDateByGrp = {};
-  purchaseOrders.forEach(po => { if (po.grpReceived != null) poPayDateByGrp[po.grpReceived] = po.paidDate || null; });
-  const schfRecogDate = t => (t.groupId != null && poPayDateByGrp.hasOwnProperty(t.groupId)) ? poPayDateByGrp[t.groupId] : t.date;
-  const invDeductionLegs = transactions.filter(t => {
-    if (t.cls !== 'Inventory' || !t.schf || t.amount <= 0) return false;
-    const rd = schfRecogDate(t);
-    return rd && inPeriod(rd);
-  });
-
-  // Schedule F deduction per line = |net of the expense-class legs| + inventory-
-  // purchase legs. The two kinds are summed separately on purpose:
-  //   - Expense/Contribution legs are NETTED within a line first, so a refund
-  //     (a positive-amount expense leg, e.g. returned supplies) correctly REDUCES
-  //     that line instead of inflating it -- which a blanket Math.abs() per leg did.
-  //   - Inventory-purchase legs (positive) are then ADDED, not netted against the
-  //     expenses, so a Feed expense and an Inventory - Feed purchase on the same
-  //     line don't cancel; both are legitimate cash-basis deductions.
-  const schfExp = {}, schfInv = {};
-  filtered.forEach(t => { if (t.schf && t.cls !== 'Inventory') schfExp[t.schf] = (schfExp[t.schf] || 0) + t.amount; });
-  invDeductionLegs.forEach(t => { schfInv[t.schf] = (schfInv[t.schf] || 0) + t.amount; });
+  // Schedule F Part II recognition follows the inventory/COGS method: every
+  // deductible leg is now an expense-class leg carrying a code, dated to the
+  // period it belongs to --
+  //   - straight Expense / Contribution legs are deducted when INCURRED; and
+  //   - a production input is deducted when RELEASED (its COGS Production leg,
+  //     cls Other Expense, dated to the season the crop is sold; see TX_TYPES),
+  //     which carries the code so it flows in here.
+  // Purchase legs no longer carry a code (V3.7), so there is nothing to recognize
+  // by payment date and no separate inventory bucket to add -- the whole
+  // deduction lives in the expense-class legs below.
+  //
+  // Deduction per line = |net of the coded expense-class legs|. Legs are NETTED
+  // within a line first, so a refund (a positive-amount expense leg, e.g.
+  // returned supplies) correctly REDUCES that line instead of inflating it --
+  // which a blanket Math.abs() per leg did.
+  const schfExp = {};
+  filtered.forEach(t => { if (t.schf) schfExp[t.schf] = (schfExp[t.schf] || 0) + t.amount; });
   const schfGroups = {};
-  new Set([...Object.keys(schfExp), ...Object.keys(schfInv)]).forEach(code => {
-    schfGroups[code] = Math.abs(schfExp[code] || 0) + (schfInv[code] || 0);
-  });
+  Object.keys(schfExp).forEach(code => { schfGroups[code] = Math.abs(schfExp[code]); });
   const schfTotal = Object.values(schfGroups).reduce((s, v) => s + v, 0);
-  // Reconciles Schedule F to the Expense Breakdown: inventory purchases are
-  // deducted when PAID (see above) but post to the Inventory asset, not an
-  // Expense class, so they're outside totalExp. Inventory Used posts the
-  // offsetting COGS expense but with schf explicitly blanked (see TX_TYPES) so it
-  // isn't deducted twice. The two adjustments below are exactly the difference
-  // between totalExp and schfTotal.
-  const invPurchasedSchf = invDeductionLegs.reduce((s, t) => s + t.amount, 0);
+  // Reconciles Schedule F to the Expense Breakdown. Every deductible leg is now
+  // inside totalExp, so the only gap is the expense-class legs that carry NO Part
+  // II code: resale cost of goods sold (COGS - Resale) and raised-crop cost
+  // released (COGS Production on grain -- a raised commodity has no separate
+  // deductible basis). Subtracting those uncoded expense legs from the Expense
+  // Breakdown lands exactly on the Schedule F total.
+  const nonSchfExp = filtered
+    .filter(t => EXPENSE_CLASSES.includes(t.cls) && notYEC(t) && !t.schf)
+    .reduce((s, t) => s + t.amount, 0);
+  const showSchfRecon = schfTotal > 0 || Math.abs(nonSchfExp) > 0;
+  // All cost-of-goods (Inventory Used) legs, resale and production alike. Used by
+  // the Performance Margins section to strip inventory/COGS for the operating view.
   const invUsedCOGS = filtered.filter(t => t.cls === 'Other Expense').reduce((s, t) => s + Math.abs(t.amount), 0);
-  const showSchfRecon = schfTotal > 0 || invPurchasedSchf > 0 || invUsedCOGS > 0;
   const miFiltered = mileageLog.filter(m => inPeriod(m.date));
   const periodLabel = period === 'annual' ? `Full Year ${year}` : `Q${period} ${year}`;
 
@@ -3304,12 +3306,11 @@ function generateReport() {
   if (showSchfRecon) {
     html += `<div class="report-section">
       <h3>Reconciling Schedule F to Expenses</h3>
-      <p class="schf-note">Schedule F deducts inventory when paid (cash basis). The Expense Breakdown recognizes it when used. This is why the two totals above don't match -- it isn't an error.</p>
+      <p class="schf-note">Schedule F Part II is your farm-expense deductions. The Expense Breakdown also includes cost of goods that isn't a Part II deduction -- resale goods (recovered through cost of goods sold) and released raised crops (a raised commodity has no separate deductible basis). Removing those lands on the Schedule F total; the gap isn't an error.</p>
       <table class="report-table">
         <tbody>
           <tr><td>Expense Breakdown Total (this period)</td><td style="text-align:right">${fmt$(Math.abs(totalExp))}</td></tr>
-          <tr><td>Less: Inventory Used / COGS (already deducted when paid)</td><td style="text-align:right">(${fmt$(invUsedCOGS)})</td></tr>
-          <tr><td>Plus: Inventory Paid this period (cash-basis deduction)</td><td style="text-align:right">${fmt$(invPurchasedSchf)}</td></tr>
+          <tr><td>Less: Cost of goods sold not on Part II (resale &amp; raised crop)</td><td style="text-align:right">(${fmt$(nonSchfExp)})</td></tr>
         </tbody>
         <tfoot><tr><td>= Total Schedule F Deductions</td><td style="text-align:right">${fmt$(schfTotal)}</td></tr></tfoot>
       </table>
@@ -3319,8 +3320,9 @@ function generateReport() {
   // Performance margins on three expense bases, so the as-filed figure and the
   // operating figure can be read against the book number in one place. Sign
   // convention: totalExp is negative, schfTotal and invUsedCOGS are positive.
-  //   - Schedule F (as filed): revenue less Schedule F deductions (inventory
-  //     deducted when PAID, COGS excluded). Matches the return.
+  //   - Schedule F (as filed): revenue less Schedule F deductions (production
+  //     inputs deducted when RELEASED; resale and raised-crop COGS excluded, as
+  //     they are not Part II deductions). Matches the return.
   //   - Operating (inventory excluded): revenue less book operating expenses
   //     with all inventory/COGS stripped -- isolates operating performance.
   //   - Book Net Income: the headline P&L above, repeated for comparison.
@@ -3332,7 +3334,7 @@ function generateReport() {
   const marginPct = v => totalRev ? (v / totalRev * 100).toFixed(1) + '%' : '—';
   html += `<div class="report-section">
     <h3>Performance Margins</h3>
-    <p class="schf-note">Three views of the same period on different expense bases. <strong>Schedule F</strong> is the P&amp;L as it lands on your return (inventory deducted when paid, COGS excluded). <strong>Operating</strong> strips all inventory &amp; COGS to isolate operating performance. <strong>Book</strong> is the headline Net Income above. All three use this period's revenue of ${fmt$(totalRev)}. Reference only &mdash; verify with your tax preparer.</p>
+    <p class="schf-note">Three views of the same period on different expense bases. <strong>Schedule F</strong> is the P&amp;L as it lands on your return (production inputs deducted when released; resale &amp; raised-crop COGS excluded). <strong>Operating</strong> strips all inventory &amp; COGS to isolate operating performance. <strong>Book</strong> is the headline Net Income above. All three use this period's revenue of ${fmt$(totalRev)}. Reference only &mdash; verify with your tax preparer.</p>
     <table class="report-table">
       <thead><tr><th>Basis</th><th style="text-align:right">Expenses</th><th style="text-align:right">Net</th><th style="text-align:right">Margin</th></tr></thead>
       <tbody>
@@ -5037,9 +5039,9 @@ function poReceive(id) {
   po.receivedDate = todayStr();
   po.grpReceived = nextId();
   const grp = po.grpReceived;
-  // PO inventory purchases take the same Schedule F deduction a manual
-  // Inventory Purchase entry would, mapped from the inventory account.
-  const schf = SCHEDULE_F_MAP[po.cat] || '';
+  // PO inventory receipts carry NO Schedule F code, same as a manual Inventory
+  // Purchase: the deduction is taken on release (Inventory Used), not at receipt.
+  const schf = '';
   // Carry the PO notes field through to the ledger so it is searchable there
   const noteSuffix = po.notes ? ' | ' + po.notes : '';
   transactions.push(
@@ -5759,20 +5761,28 @@ function migrateToV3_4() {
 // =====================================================
 // V3.5 DATA MIGRATION: enforce the Schedule F invariant
 // A Schedule F code is a Part II farm-expense deduction, so it may live ONLY on
-// an Expense leg, a Contribution Expense leg, or an inventory *purchase* leg
-// (positive Inventory) -- that is exactly where the cash-basis deduction is taken.
-// It must be blank everywhere else. Older/imported data stranded codes on:
-//   - Inventory Used COGS legs (cls Other Expense) -> double deduction, since the
-//     input was already deducted when purchased; and
+// an Expense leg, a Contribution Expense leg, or a COGS *production release* leg
+// (cls Other Expense, cat 'COGS Production') -- that is exactly where the
+// inventory/COGS-method deduction is taken (when a production input is released
+// to a crop, not when it was purchased). It must be blank everywhere else,
+// including:
+//   - inventory purchase legs (positive Inventory) -> the deduction moved to the
+//     release leg (V3.7); a code here would double-deduct;
+//   - COGS - Resale legs -> resale is recovered via cost of goods sold, not Part II;
 //   - an Owner Draw leg (cls Owner Equity) -> a phantom deduction on money that
 //     never was a business expense.
-// Both overstate the Schedule F total and stop the reconciliation worksheet from
-// footing. This blanks schf on every leg outside the permitted set. Amounts and
-// classes are never touched, so re-running is idempotent. Subsumes V3.2 (which
-// only cleared Revenue legs); V3.2 is kept so pre-V3.5 backups still self-heal.
+// Anything stray overstates the Schedule F total and stops the reconciliation
+// worksheet from footing. This blanks schf on every leg outside the permitted
+// set. Amounts and classes are never touched, so re-running is idempotent.
+// Subsumes V3.2 (which only cleared Revenue legs); V3.2 is kept so pre-V3.5
+// backups still self-heal. NOTE: the permitted set changed in V3.7 (deduction
+// moved purchase->release); V3.7 does the paired place/strip, and this invariant
+// keeps it from being undone on every subsequent load/import.
 // =====================================================
 function schfAllowed(t) {
-  return t.cls === 'Expense' || t.cls === 'Contribution Expense' || (t.cls === 'Inventory' && t.amount > 0);
+  return t.cls === 'Expense'
+      || t.cls === 'Contribution Expense'
+      || (t.cls === 'Other Expense' && t.cat === 'COGS Production');
 }
 function runMigration_v3_5() {
   let schfStripped = 0;
@@ -5827,6 +5837,59 @@ function migrateToV3_6() {
     renderLedgerFull(); updateLedgerTiles(); renderDashboard();
   }
   console.log('V3.6 auto-migration (Schedule F canonicalization):', result);
+}
+
+// =====================================================
+// V3.7 DATA MIGRATION: move the deduction from purchase to release
+// The model changed from deduct-when-PAID to the inventory/COGS method
+// (deduct-when-RELEASED): a purchased production input carries no Schedule F code
+// at purchase and instead takes its deduction on the Inventory Used / COGS
+// release leg, dated to the season the crop is sold. Berry/horticulture buys and
+// plants in one calendar year and sells the crop the next, so deducting at
+// purchase mismatched the cost from the revenue it produced.
+// This migration does BOTH halves of that move, so it is correct on its own even
+// when the V3.5 flag is already set and V3.5 does not re-run on a plain load:
+//   1. STRIP schf from every inventory purchase leg (positive Inventory). The
+//      deduction no longer lives there.
+//   2. PLACE schf on each COGS Production release leg that is still blank,
+//      mapped from its paired inventory-reduction leg's category (same groupId)
+//      via SCHEDULE_F_MAP. Grain and resale map to '' and stay blank -- raised
+//      output has no separate basis and resale is recovered via cost of goods
+//      sold, not Part II.
+// Idempotent: (1) re-runs find nothing to strip; (2) an already-coded release
+// leg fails the `!t.schf` guard. Amounts and classes are never touched.
+// =====================================================
+function runMigration_v3_7() {
+  let schfPurchaseStripped = 0, schfReleasePlaced = 0;
+  // Map a release group to the inventory category it drew down. The Inventory
+  // Used posting pairs a COGS leg with the inventory-reduction leg under one
+  // groupId; the reduction leg keeps the specific subcategory the COGS leg drops.
+  const invCatByGrp = {};
+  transactions.forEach(t => {
+    if (t.cls === 'Inventory' && t.amount < 0 && t.groupId != null) invCatByGrp[t.groupId] = t.cat;
+  });
+  transactions.forEach(t => {
+    // (1) Purchase legs no longer carry a deduction.
+    if (t.cls === 'Inventory' && t.amount > 0 && t.schf) { t.schf = ''; schfPurchaseStripped++; }
+    // (2) Blank production-release legs take the deduction mapped from the input.
+    if (t.cls === 'Other Expense' && t.cat === 'COGS Production' && !t.schf && t.groupId != null) {
+      const code = SCHEDULE_F_MAP[invCatByGrp[t.groupId]] || '';
+      if (code) { t.schf = code; schfReleasePlaced++; }
+    }
+  });
+  return { schfPurchaseStripped, schfReleasePlaced };
+}
+
+function migrateToV3_7() {
+  if (localStorage.getItem('sff_v3_7_migrated') === '1') return;
+  const result = runMigration_v3_7();
+  localStorage.setItem('sff_v3_7_migrated', '1');
+  if (result.schfPurchaseStripped > 0 || result.schfReleasePlaced > 0) {
+    saveToStorage();
+    gdriveMarkDirty();  // corrected local data; surface a "Save to Drive" prompt
+    renderLedgerFull(); updateLedgerTiles(); renderDashboard();
+  }
+  console.log('V3.7 auto-migration (deduction moved purchase->release):', result);
 }
 
 // Surface likely-duplicate data. Two signals of different confidence:
