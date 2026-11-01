@@ -1105,7 +1105,7 @@ tbody td { padding: 8px 12px; color: var(--text); vertical-align: middle; }
 //                          re-run every migration on load. This counter is
 //                          intentionally decoupled from APP_VERSION.
 // =====================================================
-const APP_VERSION = '7.13';
+const APP_VERSION = '7.14';
 const BACKUP_SCHEMA_VERSION = 4;
 
 // =====================================================
@@ -1141,6 +1141,19 @@ const LOGO_URI = "";
 // =====================================================
 // TRANSACTION TYPE DEFINITIONS
 // =====================================================
+// Inventory leaving the books, shared by Inventory Used and Inventory Write-off.
+function inventoryReleasePostings(amt, cat) {
+  return [
+    // The COGS release leg carries the Schedule F deduction, mapped from the
+    // inventory category. SCHEDULE_F_MAP returns '' for raised output
+    // (Inventory - Grain) and resale goods (Inventory - Resale), so those
+    // release with no Part II code -- resale is recovered via cost of goods
+    // sold and a raised crop has no separate deductible basis.
+    { cat: cat === 'Inventory - Resale' ? 'COGS - Resale' : 'COGS Production', cls: 'Other Expense', amt: -amt, schf: SCHEDULE_F_MAP[cat] || '' },
+    // The inventory reduction leg is an asset movement only -- never a deduction.
+    { cat, cls: 'Inventory', amt: -amt, schf: '' }
+  ];
+}
 const TX_TYPES = {
   'Cash Expense': {
     hint: 'You pay for something from checking. Checking goes down, expense category goes up.',
@@ -1213,16 +1226,15 @@ const TX_TYPES = {
     defaultCls: 'Inventory',
     showQty: true,
     noSchf: true,
-    postings: (amt, cat) => [
-      // The COGS release leg carries the Schedule F deduction, mapped from the
-      // inventory category. SCHEDULE_F_MAP returns '' for raised output
-      // (Inventory - Grain) and resale goods (Inventory - Resale), so those
-      // release with no Part II code -- resale is recovered via cost of goods
-      // sold and a raised crop has no separate deductible basis.
-      { cat: cat === 'Inventory - Resale' ? 'COGS - Resale' : 'COGS Production', cls: 'Other Expense', amt: -amt, schf: SCHEDULE_F_MAP[cat] || '' },
-      // The inventory reduction leg is an asset movement only -- never a deduction.
-      { cat, cls: 'Inventory', amt: -amt, schf: '' }
-    ]
+    postings: (amt, cat) => inventoryReleasePostings(amt, cat)
+  },
+  'Inventory Write-off': {
+    hint: 'Inventory lost, spoiled, or dead (e.g. plants that failed). Posts exactly like Inventory Used, so a production input still takes its Schedule F deduction, but stays labeled as a loss. Date it in the year the loss happened.',
+    categories: ['Inventory - Feed','Inventory - Grain','Inventory - Plants','Inventory - Seeds','Inventory - Supplies','Inventory - Resale'],
+    defaultCls: 'Inventory',
+    showQty: true,
+    noSchf: true,
+    postings: (amt, cat) => inventoryReleasePostings(amt, cat)
   },
   'Retail Tax Payment': {
     hint: 'You pay collected tax to MyTax IL. Checking and the tax liability both go down.',
@@ -1313,6 +1325,14 @@ const QUARTER_MONTHS = [[1, 2, 3], [4, 5, 6], [7, 8, 9], [10, 11, 12]];
 // Year-End Close rows are excluded from P&L figures so closed years still report
 // their true revenue/expense/net (the closing entry itself nets to retained earnings).
 const notYEC = t => t.txType !== 'Year-End Close';
+// Schedule F inventory method change (V3.7). Before this date a purchased
+// production input was deducted when BOUGHT (the purchase leg carried the code);
+// from this date it is deducted when RELEASED (the COGS Production leg carries
+// it). Years already filed under the old rule must keep reporting the way they
+// were filed, so every Schedule F rule checks a leg's date against this cutoff
+// rather than rewriting history.
+const SCHF_RELEASE_METHOD_FROM = '2026-01-01';
+const schfReleaseMethod = d => d >= SCHF_RELEASE_METHOD_FROM;
 
 // =====================================================
 // FARM IDENTITY
@@ -1557,6 +1577,7 @@ function loadFromStorage() {
   migrateToV3_5();
   migrateToV3_6();
   migrateToV3_7();
+  warnIfDuplicates();
 }
 
 // =====================================================
@@ -1711,6 +1732,7 @@ function applyBackupPayload(data) {
   migrateToV3_6();
   migrateToV3_7();
   renderAll();
+  warnIfDuplicates();
 }
 
 // =====================================================
@@ -2192,7 +2214,7 @@ async function addTransaction() {
   postings.forEach((p, i) => {
     let rowNotes = p.notes || (i === 0 ? notes : '');
     if (i === 0 && qty !== undefined) rowNotes = rowNotes ? `${rowNotes} | Qty: ${qty}` : `Qty: ${qty}`;
-    transactions.push({
+    const row = {
       id: nextId(),
       groupId,
       txType: type,
@@ -2210,7 +2232,9 @@ async function addTransaction() {
       schf: p.cls === 'Revenue' ? '' : (p.schf !== undefined ? p.schf : (p.cat === cat ? schf : '')),
       check: i === 0 ? check : '',
       notes: rowNotes
-    });
+    };
+    applySchfMethod(row);
+    transactions.push(row);
   });
 
   sortTransactions();
@@ -3169,15 +3193,49 @@ function generateReport() {
   // within a line first, so a refund (a positive-amount expense leg, e.g.
   // returned supplies) correctly REDUCES that line instead of inflating it --
   // which a blanket Math.abs() per leg did.
+  //
+  // Only legs schfAllowed() permits count, so a code stray on any other leg
+  // can't net against a real line. Before SCHF_RELEASE_METHOD_FROM that set is
+  // the purchase leg instead of the release leg; its amount is positive, so it is
+  // flipped to the expense sign before netting. Released inventory that was
+  // already deducted at purchase (schfCarryoverAbsorbed) is added back out.
   const schfExp = {};
-  // Deductions live only on expense-class legs (straight Expense / Contribution,
-  // and the COGS production-release leg). Restricting to EXPENSE_CLASSES means a
-  // code stray on any other leg -- e.g. a purchase leg on pre-V3.7 data -- can't
-  // net against a real expense line and corrupt the total.
-  filtered.forEach(t => { if (t.schf && EXPENSE_CLASSES.includes(t.cls)) schfExp[t.schf] = (schfExp[t.schf] || 0) + t.amount; });
+  const absorbed = schfCarryoverAbsorbed();
+  let schfCarryover = 0, legacyInvSchf = 0;
+  filtered.forEach(t => {
+    if (!t.schf || !schfAllowed(t)) return;
+    let amt = t.amount;
+    if (t.cls === 'Inventory') { amt = -amt; legacyInvSchf += t.amount; }
+    if (absorbed[t.id]) { amt += absorbed[t.id]; schfCarryover += absorbed[t.id]; }
+    schfExp[t.schf] = (schfExp[t.schf] || 0) + amt;
+  });
   const schfGroups = {};
   Object.keys(schfExp).forEach(code => { schfGroups[code] = Math.abs(schfExp[code]); });
   const schfTotal = Object.values(schfGroups).reduce((s, v) => s + v, 0);
+
+  // Footing check, in place of the reconciliation table the report used to
+  // show. Built from the P&L side: expenses less the uncoded ones, plus any
+  // pre-cutoff purchase deductions, less carryover, must equal the Schedule F
+  // total. It breaks when a line nets to income (a refund larger than its
+  // expense) or when coded legs sit where they're ignored.
+  const uncodedExp = expenses.filter(t => !t.schf || !schfAllowed(t)).reduce((s, t) => s + t.amount, 0);
+  const expectedSchf = -(totalExp - uncodedExp) + legacyInvSchf - schfCarryover;
+  const strayCoded = filtered.filter(t => t.schf && !schfAllowed(t)).length;
+  const schfIssues = [];
+  if (Math.abs(expectedSchf - schfTotal) > 0.01) schfIssues.push(`Schedule F total doesn't foot to the expense ledger (off by ${fmt$(Math.abs(expectedSchf - schfTotal))}). A line may net to a credit; check refunds.`);
+  if (strayCoded) schfIssues.push(`${strayCoded} ledger row${strayCoded !== 1 ? 's carry' : ' carries'} a Schedule F code where it isn't allowed and ${strayCoded !== 1 ? 'were' : 'was'} left out.`);
+
+  // Release dating: a production input is meant to be released in the month its
+  // crop sells. A coded release in a month with no sales is likely misdated.
+  const revMonths = new Set(transactions.filter(t => t.cls === 'Revenue' && notYEC(t) && t.amount > 0).map(t => t.date.slice(0, 7)));
+  const offSaleReleases = {};
+  filtered.forEach(t => {
+    if (t.cls !== 'Other Expense' || t.cat !== 'COGS Production' || !t.schf || !schfReleaseMethod(t.date)) return;
+    const m = t.date.slice(0, 7);
+    if (!revMonths.has(m)) offSaleReleases[m] = (offSaleReleases[m] || 0) - t.amount;
+  });
+  const offSaleList = Object.keys(offSaleReleases).sort().map(m =>
+    `${new Date(m + '-01T00:00:00').toLocaleString('en-US', { month: 'short', year: 'numeric' })} (${fmt$(offSaleReleases[m])})`);
   const miFiltered = mileageLog.filter(m => inPeriod(m.date));
   const periodLabel = period === 'annual' ? `Full Year ${year}` : `Q${period} ${year}`;
 
@@ -3283,8 +3341,12 @@ function generateReport() {
           `<tr><td>${esc(k)}</td><td style="text-align:right">${fmt$(v)}</td></tr>`).join('')}</tbody>
         <tfoot><tr><td>Total Schedule F Deductions</td><td style="text-align:right">${fmt$(schfTotal)}</td></tr></tfoot>
       </table>
+      ${schfCarryover > 0.005 ? `<p class="schf-note">Excludes ${fmt$(schfCarryover)} of inventory released this period that was already deducted when bought before ${fmtDate(SCHF_RELEASE_METHOD_FROM)}.</p>` : ''}
+      ${offSaleList.length ? `<p class="schf-note">Production inputs released in months with no sales: ${offSaleList.join(', ')}. Releases are meant to be dated to the month the crop sells.</p>` : ''}
+      ${schfIssues.map(m => `<p class="schf-note" style="color:var(--red)">${esc(m)}</p>`).join('')}
     </div>`;
   }
+  if (schfIssues.length) showToast(schfIssues[0], 'error');
 
   // Performance margins on two expense bases: the as-filed Schedule F figure and
   // the headline book figure, read against a common revenue. Sign convention:
@@ -5262,12 +5324,23 @@ function buildInventoryRollForward(year, period) {
       <td style="text-align:right">(${fmt$(Math.abs(used))})</td>
       <td style="text-align:right;font-weight:700">${fmt$(ending)}</td></tr>`;
   }).join('');
+  // Year-end prompt: a purchased production input is deducted only when it is
+  // released, so anything used up, lost or dead but never posted out is never
+  // deducted at all. Grain (raised, no basis) and resale goods aren't Part II.
+  let carriedNote = '';
+  if (period === 'annual') {
+    const carried = transactions
+      .filter(t => t.cls === 'Inventory' && t.date <= e && schfReleaseMethod(t.date) && SCHEDULE_F_MAP[t.cat])
+      .reduce((a, t) => a + t.amount, 0);
+    if (carried > 0.005) carriedNote = `<p class="schf-note" style="color:var(--red)">${fmt$(carried)} of purchased production inputs is still on hand at year end and hasn't been deducted. If any of it was used, lost, or died in ${year}, post Inventory Used or Inventory Write-off dated in ${year}.</p>`;
+  }
   return `<div class="report-section">
     <h3>Inventory Roll Forward</h3>
     <table class="report-table">
       <thead><tr><th>Account</th><th style="text-align:right">Opening</th><th style="text-align:right">Purchased</th><th style="text-align:right">Used / Sold</th><th style="text-align:right">Ending</th></tr></thead>
       <tbody>${rows}</tbody>
     </table>
+    ${carriedNote}
   </div>`;
 }
 // =====================================================
@@ -5733,9 +5806,49 @@ function migrateToV3_4() {
 // keeps it from being undone on every subsequent load/import.
 // =====================================================
 function schfAllowed(t) {
-  return t.cls === 'Expense'
-      || t.cls === 'Contribution Expense'
-      || (t.cls === 'Other Expense' && t.cat === 'COGS Production');
+  if (t.cls === 'Expense' || t.cls === 'Contribution Expense') return true;
+  // Inventory follows the method in force on the leg's date (see
+  // SCHF_RELEASE_METHOD_FROM): release leg from the cutoff, purchase leg before.
+  if (schfReleaseMethod(t.date)) return t.cls === 'Other Expense' && t.cat === 'COGS Production';
+  return t.cls === 'Inventory' && t.amount > 0;
+}
+
+// A backdated entry follows the Schedule F rule in force on its date: before the
+// method change the purchase leg carries the code and the release leg doesn't.
+function applySchfMethod(t) {
+  if (schfReleaseMethod(t.date)) return;
+  if (t.cls === 'Inventory' && t.amount > 0) t.schf = SCHEDULE_F_MAP[t.cat] || '';
+  else if (t.cls === 'Other Expense') t.schf = '';
+}
+
+// Inventory bought before the method change was already deducted at purchase,
+// so whatever of it is still on hand at the cutoff must not be deducted again
+// when released afterwards. Per category the carryover is the stock on hand at
+// the cutoff, capped at what was actually coded at purchase (equity-funded
+// opening lots never carried a code). Coded releases from the cutoff on draw it
+// down first-in-first-out. Returns { legId: amount that is NOT deductible }.
+function schfCarryoverAbsorbed() {
+  const onHand = {}, deducted = {};
+  transactions.forEach(t => {
+    if (t.cls !== 'Inventory' || schfReleaseMethod(t.date)) return;
+    onHand[t.cat] = (onHand[t.cat] || 0) + t.amount;
+    if (t.amount > 0 && t.schf) deducted[t.cat] = (deducted[t.cat] || 0) + t.amount;
+  });
+  const remaining = {};
+  Object.keys(deducted).forEach(cat => { remaining[cat] = Math.min(deducted[cat], Math.max(0, onHand[cat] || 0)); });
+  const absorbed = {};
+  if (!Object.values(remaining).some(v => v > 0.005)) return absorbed;
+  const invCatByGrp = {};
+  transactions.forEach(t => { if (t.cls === 'Inventory' && t.amount < 0 && t.groupId != null) invCatByGrp[t.groupId] = t.cat; });
+  transactions
+    .filter(t => t.cls === 'Other Expense' && t.cat === 'COGS Production' && t.schf && t.amount < 0 && schfReleaseMethod(t.date))
+    .sort((a, b) => a.date.localeCompare(b.date) || a.id - b.id)
+    .forEach(t => {
+      const cat = invCatByGrp[t.groupId];
+      const take = Math.min(remaining[cat] || 0, -t.amount);
+      if (take > 0.005) { absorbed[t.id] = take; remaining[cat] -= take; }
+    });
+  return absorbed;
 }
 function runMigration_v3_5() {
   let schfStripped = 0;
@@ -5809,28 +5922,39 @@ function migrateToV3_6() {
 //      via SCHEDULE_F_MAP. Grain and resale map to '' and stay blank -- raised
 //      output has no separate basis and resale is recovered via cost of goods
 //      sold, not Part II.
+// Only legs dated on/after SCHF_RELEASE_METHOD_FROM move; earlier years were
+// filed deduct-at-purchase and are left as filed.
 // Idempotent: (1) re-runs find nothing to strip; (2) an already-coded release
 // leg fails the `!t.schf` guard. Amounts and classes are never touched.
 // =====================================================
 function runMigration_v3_7() {
-  let schfPurchaseStripped = 0, schfReleasePlaced = 0;
-  // Map a release group to the inventory category it drew down. The Inventory
+  let schfPurchaseStripped = 0, schfReleasePlaced = 0, schfReleaseAmbiguous = 0;
+  // Map a release group to the inventory categories it drew down. The Inventory
   // Used posting pairs a COGS leg with the inventory-reduction leg under one
   // groupId; the reduction leg keeps the specific subcategory the COGS leg drops.
-  const invCatByGrp = {};
+  const invCatsByGrp = {};
   transactions.forEach(t => {
-    if (t.cls === 'Inventory' && t.amount < 0 && t.groupId != null) invCatByGrp[t.groupId] = t.cat;
+    if (t.cls === 'Inventory' && t.amount < 0 && t.groupId != null) {
+      if (!invCatsByGrp[t.groupId]) invCatsByGrp[t.groupId] = new Set();
+      invCatsByGrp[t.groupId].add(t.cat);
+    }
   });
   transactions.forEach(t => {
+    if (!schfReleaseMethod(t.date)) return;
     // (1) Purchase legs no longer carry a deduction.
     if (t.cls === 'Inventory' && t.amount > 0 && t.schf) { t.schf = ''; schfPurchaseStripped++; }
     // (2) Blank production-release legs take the deduction mapped from the input.
     if (t.cls === 'Other Expense' && t.cat === 'COGS Production' && !t.schf && t.groupId != null) {
-      const code = SCHEDULE_F_MAP[invCatByGrp[t.groupId]] || '';
+      const cats = invCatsByGrp[t.groupId];
+      if (!cats) return;
+      // A group drawing down several categories can't say which code this leg
+      // gets; leave it blank and report it rather than guess.
+      if (cats.size > 1) { schfReleaseAmbiguous++; return; }
+      const code = SCHEDULE_F_MAP[[...cats][0]] || '';
       if (code) { t.schf = code; schfReleasePlaced++; }
     }
   });
-  return { schfPurchaseStripped, schfReleasePlaced };
+  return { schfPurchaseStripped, schfReleasePlaced, schfReleaseAmbiguous };
 }
 
 function migrateToV3_7() {
@@ -5841,6 +5965,9 @@ function migrateToV3_7() {
     saveToStorage();
     gdriveMarkDirty();  // corrected local data; surface a "Save to Drive" prompt
     renderLedgerFull(); updateLedgerTiles(); renderDashboard();
+  }
+  if (result.schfReleaseAmbiguous > 0) {
+    showToast(`${result.schfReleaseAmbiguous} inventory release(s) draw on more than one category and were left without a Schedule F code. Set the code on those COGS Production rows by hand.`, 'error');
   }
   console.log('V3.7 auto-migration (deduction moved purchase->release):', result);
 }
@@ -5874,62 +6001,15 @@ function scanDuplicates() {
   return { dupSignatures, extraRows, mileageOverPosted };
 }
 
-function runMigrationManually() {
-  // Always re-run regardless of flag
-  localStorage.removeItem('sff_v3_1_migrated');
-  const result = runMigration_v3_1();
-  localStorage.setItem('sff_v3_1_migrated', '1');
-
-  const anyWork = result.orphanPairsRepaired + result.miIdStamped + result.mileageBackfilled > 0;
-  if (anyWork) {
-    saveToStorage();
-    renderLedgerFull(); updateLedgerTiles(); renderMileage(); renderDashboard();
-  }
-
-  // Display result in the settings panel
-  const el = document.getElementById('migration-status');
-  const mileageTotal = mileageLog.length;
-  const mileageCovered = result.mileageAlreadyPresent + result.miIdStamped + result.mileageBackfilled;
-  const allCovered = mileageCovered === mileageTotal;
-
-  // Duplicate scan runs after any repair so its counts reflect the final state.
-  // Mileage over-posting is a confirmed duplicate (checked against the sheet);
-  // matching content signatures are only a "review" hint (twins are legitimate).
+// The definitive duplicate signal (mileage posted to the ledger more than once
+// vs the mileage sheet) used to sit behind a Settings button; check it on every
+// load and restore instead. Content look-alikes stay unflagged -- they're often
+// legitimate (two people paying the same amount the same day).
+function warnIfDuplicates() {
   const dup = scanDuplicates();
-  const dupWarning =
-    (dup.mileageOverPosted > 0
-      ? '<br><strong style="color:#8a1c1c">Mileage duplicates: ' + dup.mileageOverPosted +
-        ' trip' + (dup.mileageOverPosted !== 1 ? 's' : '') + ' posted to the ledger more than once ' +
-        '(vs the mileage sheet). Export a backup and remove the extra legs before trusting your totals.</strong>'
-      : '') +
-    (dup.extraRows > 0
-      ? '<br><span style="color:#8a5c00">Possible duplicates to review: ' + dup.extraRows +
-        ' row' + (dup.extraRows !== 1 ? 's' : '') + ' share an identical date, amount, and description. ' +
-        'These may be legitimate (e.g. two people paying the same amount the same day) -- verify before deleting.</span>'
-      : '');
-  const clean = !anyWork && allCovered && dup.mileageOverPosted === 0 && dup.extraRows === 0;
-
-  if (clean) {
-    el.style.background = '#d4edda';
-    el.style.border = '1px solid #b0d8bb';
-    el.style.color = '#155724';
-    el.innerHTML = '<strong>All clear.</strong> No issues found. Mileage log and ledger are fully in sync (' + mileageTotal + ' of ' + mileageTotal + ' trips covered).'
-      + ' Transactions: ' + result.txCountAfter + '.';
-  } else {
-    const flag = anyWork || dup.extraRows > 0 || dup.mileageOverPosted > 0;
-    el.style.background = flag ? '#fff8e1' : '#d4edda';
-    el.style.border = flag ? '1px solid #ffe082' : '1px solid #b0d8bb';
-    el.style.color = flag ? '#5d4037' : '#155724';
-    el.innerHTML =
-      '<strong>' + (anyWork ? 'Migration complete.' : 'No changes needed.') + '</strong><br>' +
-      'Orphaned group pairs repaired: ' + result.orphanPairsRepaired + '<br>' +
-      'Mileage ledger rows stamped with link ID: ' + result.miIdStamped + '<br>' +
-      'Mileage trips backfilled to ledger: ' + result.mileageBackfilled + ' (of ' + mileageTotal + ' total trips)<br>' +
-      'Trips already in ledger: ' + result.mileageAlreadyPresent + '<br>' +
-      'Ledger rows before: ' + result.txCountBefore + ' &rarr; after: ' + result.txCountAfter +
-      dupWarning;
+  if (dup.mileageOverPosted > 0) {
+    showToast(`Mileage duplicates: ${dup.mileageOverPosted} trip${dup.mileageOverPosted !== 1 ? 's' : ''} posted to the ledger more than once. Remove the extra legs before trusting your totals.`, 'error');
   }
-  el.style.display = 'block';
 }
 
 // =====================================================
