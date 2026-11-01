@@ -132,6 +132,20 @@ tbody td { padding: 8px 12px; color: var(--text); vertical-align: middle; }
 .ledger-legs thead th { background: var(--cream-dark); font-size: 0.64rem; padding: 6px 10px; }
 .ledger-legs tbody td { padding: 6px 10px; }
 .ledger-actions { display: flex; justify-content: flex-end; margin-top: 8px; }
+.sq-table td { white-space: nowrap; padding: 8px 8px; }
+.sq-table th { padding: 9px 8px; }
+.sq-table select, .sq-table input[type=number] { font-family: 'Lato', sans-serif; font-size: 0.8rem; padding: 4px 6px; border: 1px solid var(--border); border-radius: 4px; background: var(--cream); }
+.sq-table input[type=number] { width: 96px; text-align: right; }
+.sq-table select { max-width: 160px; }
+.sq-table td.sq-c-loc { white-space: normal; min-width: 140px; }
+.sq-table tr.sq-done td { color: var(--text-muted); }
+.sq-status { font-size: 0.72rem; color: var(--text-muted); white-space: normal; }
+.sq-table tr.sq-done .sq-status { color: #8a5c00; }
+.sq-footer { position: sticky; bottom: -32px; background: #fffdf5; margin: 0 -32px -32px; padding: 12px 32px 24px; border-top: 1px solid var(--border); }
+.sq-show-all { display: block; font-size: 0.8rem; color: var(--text-muted); margin-bottom: 8px; cursor: pointer; }
+.sq-summary { display: flex; justify-content: flex-end; gap: 6px 22px; flex-wrap: wrap; font-size: 0.85rem; color: var(--text-muted); margin-bottom: 12px; }
+.sq-summary strong { color: var(--text); }
+.sq-fee-label { display: none; }
 .ledger-legs > td > * { max-width: 760px; }
 .table-footer { display: flex; justify-content: flex-end; align-items: center; gap: 24px; margin-top: 12px; font-size: 0.84rem; color: var(--text-muted); padding-right: 4px; }
 .table-footer strong { color: var(--text); font-size: 0.95rem; }
@@ -262,6 +276,25 @@ tbody td { padding: 8px 12px; color: var(--text); vertical-align: middle; }
   thead th { white-space: normal; }
   tbody td { padding: 8px 8px; }
   .doc-sheet { padding: 20px 16px; }
+  /* Square import: each day stacks as a small card instead of a wide row. */
+  #square-import-modal .modal-box { padding: 20px; }
+  .sq-footer { bottom: -20px; margin: 0 -20px -20px; padding: 12px 20px 16px; }
+  .sq-table thead { display: none; }
+  .sq-table, .sq-table tbody { display: block; }
+  .sq-table tr { display: grid; grid-template-columns: 26px 1fr auto; gap: 4px 10px; padding: 10px 0; }
+  .sq-table td { padding: 0; white-space: normal; }
+  .sq-c-check { grid-column: 1; grid-row: 1 / span 2; }
+  .sq-c-date { grid-column: 2; grid-row: 1; }
+  .sq-c-amt { grid-column: 3; grid-row: 1; }
+  .sq-c-loc { grid-column: 2; grid-row: 2; }
+  .sq-c-fee { grid-column: 3; grid-row: 2; font-size: 0.78rem; }
+  .sq-fee-label { display: inline; color: var(--text-muted); }
+  .sq-c-tax { grid-column: 2 / -1; grid-row: 3; }
+  .sq-c-chan { grid-column: 2 / -1; grid-row: 4; }
+  .sq-c-adm { grid-column: 2 / -1; grid-row: 5; text-align: left !important; }
+  .sq-c-adm:empty { display: none; }
+  .sq-table select { width: 100%; max-width: none; }
+  .sq-c-adm input[type=number] { width: 100%; text-align: left; }
   /* Line items: description on its own row, qty / price / delete beneath. */
   .line-editor { grid-template-columns: 1fr 1fr auto; }
   .line-editor .li-desc { grid-column: 1 / -1; }
@@ -509,6 +542,9 @@ tbody td { padding: 8px 12px; color: var(--text); vertical-align: middle; }
       <button class="btn btn-secondary" onclick="openSplitDeposit()">Split Deposit</button>
       <label class="btn btn-secondary" style="cursor:pointer">
         Import Ledger CSV <input type="file" accept=".csv" style="display:none" onchange="importLedgerCSV(this)">
+      </label>
+      <label class="btn btn-secondary" style="cursor:pointer">
+        Import Square CSV <input type="file" accept=".csv" style="display:none" onchange="importSquareCSV(this)">
       </label>
       <div class="import-summary" id="ledger-import-summary"></div>
     </div>
@@ -1085,6 +1121,32 @@ tbody td { padding: 8px 12px; color: var(--text); vertical-align: middle; }
   </div>
 </div>
 
+<!-- SQUARE IMPORT MODAL -->
+<div class="modal-overlay" id="square-import-modal">
+  <div class="modal-box" style="width:min(980px,96vw);max-height:92vh;overflow-y:auto" role="dialog" aria-modal="true" aria-labelledby="sq-title">
+    <h2 id="sq-title">Import Square Sales</h2>
+    <p>One sale and one fee entry per day per Square location. Days already in your ledger are unchecked. Check the tax location when a reader was used somewhere other than its Square location, and for U-pick days enter the admission part of the total so it posts tax-exempt.</p>
+    <div class="table-wrap" style="margin-bottom:14px">
+      <table class="sq-table">
+        <thead><tr>
+          <th><input type="checkbox" id="sq-all" aria-label="Select all new days" onchange="sqToggleAll(this.checked)"></th>
+          <th>Date</th><th>Square Location</th><th style="text-align:right">Collected</th><th style="text-align:right">Fees</th>
+          <th>Tax Location</th><th>Channel</th><th style="text-align:right">Admission</th>
+        </tr></thead>
+        <tbody id="sq-rows"></tbody>
+      </table>
+    </div>
+    <div class="sq-footer">
+      <label class="sq-show-all"><input type="checkbox" id="sq-show-all" onchange="renderSquareImport()"> Show <span id="sq-hidden-count">0</span> days already in the ledger</label>
+      <div class="sq-summary" id="sq-summary"></div>
+      <div class="modal-actions">
+        <button class="btn btn-secondary" onclick="closeSquareImport()">Cancel</button>
+        <button class="btn btn-primary" id="sq-post" onclick="postSquareImport()">Post Selected</button>
+      </div>
+    </div>
+  </div>
+</div>
+
 <!-- MARKET OVERLAY -->
 <div class="market-overlay" id="market-overlay">
   <div class="market-panel" role="dialog" aria-modal="true" aria-labelledby="market-title">
@@ -1142,7 +1204,7 @@ tbody td { padding: 8px 12px; color: var(--text); vertical-align: middle; }
 //                          re-run every migration on load. This counter is
 //                          intentionally decoupled from APP_VERSION.
 // =====================================================
-const APP_VERSION = '7.15';
+const APP_VERSION = '7.16';
 const BACKUP_SCHEMA_VERSION = 4;
 
 // =====================================================
@@ -4801,6 +4863,231 @@ function parseCSVLine(line) {
   }
   result.push(cur);
   return result;
+}
+
+// =====================================================
+// SQUARE IMPORT
+// Reads Square's transfer-details export (Balance > Transfers > Export): one
+// row per payment or refund with its Payment Date, Collected, Fees and Square
+// Location. Posts it the way Square sales have always been entered by hand --
+// per day per Square location, a "Square" Cash Sale (produce + retail tax, plus
+// any admission) and a "Square Fees" Cash Expense. Reconcile's auto-match pairs
+// exactly those two descriptions against Square's net deposit, so they're fixed.
+// =====================================================
+const SQ_FEE_CAT = 'Professional Fees';
+// First-use defaults per Square location, taken from how each was entered by
+// hand. Whatever is picked in the preview is remembered per device after that.
+const SQ_LOCATION_DEFAULTS = {
+  'Frankfort Farmers Market': { location: 'Village of Frankfort', channel: 'Farmers Market / Show' },
+  'Craft Show':               { location: 'Will County', channel: 'Farmers Market / Show' },
+  'Farmstand':                { location: 'Will County', channel: 'Home' },
+  'Online Website':           { location: 'Will County', channel: 'Online' },
+  'U-Pick Strawberries':      { location: 'Will County', channel: 'U-Pick' }
+};
+let sqDays = [];
+
+const sqRound = x => Math.round(x * 100) / 100;
+function sqLocMap() {
+  try { return JSON.parse(localStorage.getItem('sff_sq_locmap') || '{}') || {}; } catch (e) { return {}; }
+}
+// Square exports ISO dates; accept M/D/YYYY too in case a report uses it.
+function sqDate(s) {
+  s = (s || '').trim();
+  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
+  const m = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+  return m ? `${m[3]}-${m[1].padStart(2, '0')}-${m[2].padStart(2, '0')}` : '';
+}
+function sqShiftDate(d, days) {
+  const dt = new Date(d + 'T00:00:00');
+  dt.setDate(dt.getDate() + days);
+  return dt.toISOString().slice(0, 10);
+}
+
+function importSquareCSV(input) {
+  const file = input.files[0];
+  input.value = '';
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = e => {
+    const lines = e.target.result.replace(/^﻿/, '').split(/\r?\n/).filter(l => l.trim());
+    const head = parseCSVLine(lines[0] || '').map(h => h.trim());
+    const col = n => head.indexOf(n);
+    const missing = ['Payment Date', 'Type', 'Collected', 'Fees', 'Location'].filter(n => col(n) < 0);
+    if (missing.length) {
+      showToast(`This isn't Square's transfer-details export (missing ${missing.join(', ')}). In Square: Balance > Transfers > Export.`, 'error');
+      return;
+    }
+    const money = s => parseFloat(String(s || '').replace(/[$,\s]/g, '')) || 0;
+    const byKey = new Map();
+    lines.slice(1).forEach(line => {
+      const v = parseCSVLine(line);
+      const date = sqDate(v[col('Payment Date')]);
+      if (!date) return;
+      const sqLoc = (v[col('Location')] || '').trim() || 'Square';
+      const key = date + '|' + sqLoc;
+      if (!byKey.has(key)) byKey.set(key, { date, sqLoc, collected: 0, fees: 0, payments: 0, refunds: 0 });
+      const d = byKey.get(key);
+      d.collected += money(v[col('Collected')]);
+      d.fees -= money(v[col('Fees')]);  // Square reports fees as negative
+      if ((v[col('Type')] || '').trim() === 'Refund') d.refunds++; else d.payments++;
+    });
+    if (!byKey.size) { showToast('No Square payments found in that file.', 'error'); return; }
+
+    // What's already in the ledger. Before this import existed, Square days were
+    // entered by hand (sometimes a day or two late, U-pick days as split
+    // deposits), so besides exact re-imports (srcRef) a day counts as entered if
+    // a sale of the same total sits within a few days of it, and anything on or
+    // before the last hand-entered Square day is held back for review.
+    const imported = new Set(transactions.map(t => t.srcRef).filter(Boolean));
+    const groups = {};
+    transactions.forEach(t => { if (t.groupId != null) (groups[t.groupId] = groups[t.groupId] || []).push(t); });
+    const saleCash = [];
+    let lastSquareDate = '';
+    Object.values(groups).forEach(legs => {
+      const cash = legs.find(t => t.cat === 'Cash - Checking');
+      if (cash && cash.amount > 0 && legs.some(t => t.cls === 'Revenue')) saleCash.push(cash);
+      if (legs.some(t => /^squ/i.test(t.desc) || /square/i.test(t.notes || '')) && legs[0].date > lastSquareDate) lastSquareDate = legs[0].date;
+    });
+    const map = sqLocMap();
+    sqDays = [...byKey.values()]
+      .filter(d => Math.abs(d.collected) >= 0.005 || Math.abs(d.fees) >= 0.005)
+      .sort((a, b) => b.date.localeCompare(a.date) || a.sqLoc.localeCompare(b.sqLoc))
+      .map(d => {
+        d.collected = sqRound(d.collected);
+        d.fees = sqRound(d.fees);
+        const pick = map[d.sqLoc] || SQ_LOCATION_DEFAULTS[d.sqLoc] || {};
+        d.location = saleLocations.some(l => l.name === pick.location) ? pick.location : (saleLocations[0] || {}).name || '';
+        d.channel = pick.channel || '';
+        d.admission = 0;
+        d.ref = 'square:' + d.date + ':' + d.sqLoc;
+        const lo = sqShiftDate(d.date, -1), hi = sqShiftDate(d.date, 3);
+        const match = d.collected > 0 && saleCash.find(t => t.date >= lo && t.date <= hi && Math.abs(t.amount - d.collected) < 0.005);
+        if (imported.has(d.ref)) { d.status = 'imported'; d.note = 'Already imported'; }
+        else if (match) { d.status = 'entered'; d.note = 'In ledger ' + fmtDate(match.date) + (match.desc ? ' (' + match.desc + ')' : ''); }
+        else if (lastSquareDate && d.date <= lastSquareDate) { d.status = 'before'; d.note = 'On or before your last Square entry (' + fmtDate(lastSquareDate) + '). Check before posting.'; }
+        else { d.status = 'new'; d.note = 'New'; }
+        d.selected = d.status === 'new';
+        return d;
+      });
+    document.getElementById('sq-show-all').checked = !sqDays.some(d => d.status === 'new');
+    renderSquareImport();
+    document.getElementById('square-import-modal').classList.add('open');
+    modalOpened('square-import-modal');
+  };
+  reader.readAsText(file);
+}
+
+function renderSquareImport() {
+  const channels = [...document.getElementById('tx-channel').options].map(o => o.value).filter(Boolean);
+  const opts = (list, cur) => list.map(v => `<option value="${esc(v)}"${v === cur ? ' selected' : ''}>${esc(v)}</option>`).join('');
+  // Days already in the ledger stay out of the way unless asked for, or ticked.
+  const showAll = document.getElementById('sq-show-all').checked;
+  const hidden = sqDays.filter(d => d.status !== 'new' && !d.selected).length;
+  document.getElementById('sq-hidden-count').textContent = hidden;
+  document.getElementById('sq-rows').innerHTML = sqDays.map((d, i) => (!showAll && d.status !== 'new' && !d.selected) ? '' : `<tr class="${d.status === 'new' ? '' : 'sq-done'}">
+    <td class="sq-c-check"><input type="checkbox" aria-label="Post ${esc(d.sqLoc)} on ${fmtDate(d.date)}" ${d.selected ? 'checked' : ''} ${d.status === 'imported' ? 'disabled' : ''} onchange="sqDays[${i}].selected=this.checked;sqSummary()"></td>
+    <td class="sq-c-date"><span class="ledger-type">${new Date(d.date + 'T00:00:00').toLocaleDateString('en-US', { weekday: 'short' })}</span> ${fmtDate(d.date)}</td>
+    <td class="sq-c-loc">${esc(d.sqLoc)}<div class="ledger-type">${d.payments} payment${d.payments !== 1 ? 's' : ''}${d.refunds ? `, ${d.refunds} refund${d.refunds !== 1 ? 's' : ''}` : ''}</div>${d.status === 'new' ? '' : `<div class="sq-status">${esc(d.note)}</div>`}</td>
+    <td class="sq-c-amt" style="text-align:right">${fmtAmt(d.collected)}</td>
+    <td class="sq-c-fee" style="text-align:right">${fmtAmt(-d.fees)}<span class="sq-fee-label"> fees</span></td>
+    <td class="sq-c-tax"><select aria-label="Tax location" onchange="sqDays[${i}].location=this.value;sqSummary()">${saleLocations.map(l => `<option value="${esc(l.name)}"${l.name === d.location ? ' selected' : ''}>${esc(l.name)} ${l.rate}%</option>`).join('')}</select></td>
+    <td class="sq-c-chan"><select aria-label="Sales channel" onchange="sqDays[${i}].channel=this.value;if(this.value!=='U-Pick')sqDays[${i}].admission=0;renderSquareImport()"><option value="">--</option>${opts(channels, d.channel)}</select></td>
+    <td class="sq-c-adm" style="text-align:right">${d.channel === 'U-Pick' ? `<input type="number" step="0.01" min="0" aria-label="Admission amount" value="${d.admission || ''}" placeholder="Admission $" onchange="sqDays[${i}].admission=Math.max(0,parseFloat(this.value)||0);sqSummary()">` : ''}</td>
+  </tr>`).join('');
+  sqSummary();
+}
+
+function sqSummary() {
+  const sel = sqDays.filter(d => d.selected);
+  const collected = sel.reduce((s, d) => s + d.collected, 0), fees = sel.reduce((s, d) => s + d.fees, 0);
+  const tax = sel.reduce((s, d) => s + sqPostings(d).tax, 0);
+  const bad = sel.filter(d => d.admission > d.collected + 0.005).length;
+  document.getElementById('sq-summary').innerHTML =
+    `<span>Days: <strong>${sel.length}</strong> of ${sqDays.length}</span>
+     <span>Collected: <strong>${fmt$(collected)}</strong></span>
+     <span>Retail tax: <strong>${fmt$(tax)}</strong></span>
+     <span>Fees: <strong>${fmt$(fees)}</strong></span>
+     <span>Net to checking: <strong>${fmt$(collected - fees)}</strong></span>
+     ${bad ? `<span style="color:var(--red)">${bad} day${bad !== 1 ? 's have' : ' has'} admission larger than collected.</span>` : ''}`;
+  const all = document.getElementById('sq-all');
+  const selectable = sqSelectable();
+  all.checked = selectable.length > 0 && selectable.every(d => d.selected);
+  document.getElementById('sq-post').disabled = !sel.length || bad > 0;
+}
+
+// The header checkbox covers the days on screen: new ones, plus the already-in-
+// ledger ones only while they're shown. Never exact re-imports.
+function sqSelectable() {
+  const showAll = document.getElementById('sq-show-all').checked;
+  return sqDays.filter(d => d.status === 'new' || (showAll && d.status !== 'imported'));
+}
+function sqToggleAll(on) {
+  sqSelectable().forEach(d => { d.selected = on; });
+  renderSquareImport();
+}
+
+// The sale side of one day, split the same way as a hand-entered Cash Sale:
+// admission is tax-exempt; retail tax is backed out of the rest at the chosen
+// location's rate, with produce as the remainder so the entry balances exactly.
+function sqPostings(d) {
+  const loc = saleLocations.find(l => l.name === d.location);
+  const rate = loc ? loc.rate / 100 : 0;
+  const admission = sqRound(d.admission || 0);
+  const taxable = sqRound(d.collected - admission);
+  const tax = rate ? sqRound(taxable * rate / (1 + rate)) : 0;
+  return { admission, tax, produce: sqRound(taxable - tax), rate: loc ? loc.rate : 0 };
+}
+
+function closeSquareImport() {
+  document.getElementById('square-import-modal').classList.remove('open');
+  modalClosed('square-import-modal');
+}
+
+function postSquareImport() {
+  const sel = sqDays.filter(d => d.selected && d.status !== 'imported');
+  if (!sel.length) return;
+  const map = sqLocMap();
+  const leg = (groupId, txType, date, ref, o) => Object.assign({
+    id: nextId(), groupId, txType, date, desc: 'Square', location: '', channel: '', schf: '', check: '', notes: '', srcRef: ref
+  }, o);
+  sel.forEach(d => {
+    const p = sqPostings(d);
+    if (Math.abs(d.collected) >= 0.005) {
+      const g = nextId();
+      const where = { location: d.location, channel: d.channel };
+      if (Math.abs(p.produce) >= 0.005) transactions.push(leg(g, 'Cash Sale / Deposit', d.date, d.ref, Object.assign({ cat: 'Sales of Produce', cls: 'Revenue', amount: p.produce, notes: 'Square: ' + d.sqLoc }, where)));
+      if (Math.abs(p.tax) >= 0.005) transactions.push(leg(g, 'Cash Sale / Deposit', d.date, d.ref, { cat: 'Retail Tax', cls: 'Liability', amount: p.tax, notes: `Retail tax ${p.rate}% | ${d.location}` }));
+      if (Math.abs(p.admission) >= 0.005) transactions.push(leg(g, 'Cash Sale / Deposit', d.date, d.ref, Object.assign({ cat: 'Admission Revenue', cls: 'Revenue', amount: p.admission, notes: 'Square: ' + d.sqLoc }, where)));
+      transactions.push(leg(g, 'Cash Sale / Deposit', d.date, d.ref, { cat: 'Cash - Checking', cls: 'Asset', amount: d.collected }));
+    }
+    if (Math.abs(d.fees) >= 0.005) {
+      const g = nextId();
+      transactions.push(leg(g, 'Cash Expense', d.date, d.ref, { desc: 'Square Fees', cat: SQ_FEE_CAT, cls: 'Expense', amount: -d.fees, schf: SCHEDULE_F_MAP[SQ_FEE_CAT] || '', notes: 'Square Fees' }));
+      transactions.push(leg(g, 'Cash Expense', d.date, d.ref, { desc: 'Square Fees', cat: 'Cash - Checking', cls: 'Asset', amount: -d.fees }));
+    }
+  });
+  // Remember each Square location's usual tax location and channel: the most
+  // common choice in this import, so a one-off (a market reader used at home)
+  // doesn't become the default.
+  const tally = {};
+  sel.forEach(d => {
+    const k = JSON.stringify([d.location, d.channel]);
+    tally[d.sqLoc] = tally[d.sqLoc] || {};
+    tally[d.sqLoc][k] = (tally[d.sqLoc][k] || 0) + 1;
+  });
+  Object.entries(tally).forEach(([sqLoc, counts]) => {
+    const [location, channel] = JSON.parse(Object.entries(counts).sort((a, b) => b[1] - a[1])[0][0]);
+    map[sqLoc] = { location, channel };
+  });
+  try { localStorage.setItem('sff_sq_locmap', JSON.stringify(map)); } catch (e) {}
+  sortTransactions();
+  markUnsaved();
+  renderLedgerFull();
+  updateLedgerTiles();
+  renderDashboard();
+  closeSquareImport();
+  const collected = sel.reduce((s, d) => s + d.collected, 0), fees = sel.reduce((s, d) => s + d.fees, 0);
+  showToast(`Imported ${sel.length} Square day${sel.length !== 1 ? 's' : ''}: ${fmt$(collected)} collected, ${fmt$(fees)} fees.`);
 }
 
 // =====================================================
