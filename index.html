@@ -119,6 +119,20 @@ tbody td { padding: 8px 12px; color: var(--text); vertical-align: middle; }
 .tag-equity { background: #e2d9f3; color: #4a1f8c; }
 .tag-liability { background: #f5e6cc; color: #7a4000; }
 .tag-inventory { background: #d4edda; color: #1a4a2a; }
+.ledger-entry { cursor: pointer; }
+.ledger-entry:focus-visible { outline: 2px solid var(--green-light); outline-offset: -2px; }
+.ledger-entry.open { background: var(--cream); }
+.ledger-caret { display: inline-block; width: 14px; color: var(--text-muted); font-size: 0.7rem; transition: transform 0.15s; }
+.ledger-entry.open .ledger-caret { transform: rotate(90deg); }
+.ledger-type { font-size: 0.72rem; color: var(--text-muted); margin-top: 2px; }
+.ledger-cat { font-size: 0.8rem; }
+.ledger-more { font-size: 0.7rem; color: var(--text-muted); }
+.ledger-legs > td { background: var(--cream); padding: 4px 12px 12px 26px; }
+.ledger-legs table { font-size: 0.78rem; background: #fff; border: 1px solid var(--cream-dark); }
+.ledger-legs thead th { background: var(--cream-dark); font-size: 0.64rem; padding: 6px 10px; }
+.ledger-legs tbody td { padding: 6px 10px; }
+.ledger-actions { display: flex; justify-content: flex-end; margin-top: 8px; }
+.ledger-legs > td > * { max-width: 760px; }
 .table-footer { display: flex; justify-content: flex-end; align-items: center; gap: 24px; margin-top: 12px; font-size: 0.84rem; color: var(--text-muted); padding-right: 4px; }
 .table-footer strong { color: var(--text); font-size: 0.95rem; }
 
@@ -127,7 +141,8 @@ tbody td { padding: 8px 12px; color: var(--text); vertical-align: middle; }
 .import-error { background: #fde3e1; border-color: #f0b0a0; color: #7b1c14; }
 
 /* REPORTS */
-.report-section { margin-bottom: 28px; }
+/* Wide report tables scroll inside their section, never the whole page. */
+.report-section { margin-bottom: 28px; overflow-x: auto; }
 .report-section h3 { font-family: 'Playfair Display', serif; font-size: 1rem; color: var(--green-deep); font-weight: 600; margin-bottom: 12px; padding-bottom: 6px; border-bottom: 2px solid var(--tan-light); }
 .report-table { width: 100%; font-size: 0.85rem; border-collapse: collapse; }
 .report-table th { background: var(--cream-dark); text-align: left; padding: 7px 12px; font-size: 0.75rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em; color: var(--text-muted); }
@@ -144,7 +159,7 @@ tbody td { padding: 8px 12px; color: var(--text); vertical-align: middle; }
 .bs-row.total { font-weight: 700; border-top: 1px solid var(--border); margin-top: 4px; padding-top: 6px; }
 
 /* SETTINGS */
-.settings-section { margin-bottom: 28px; }
+.settings-section { margin-bottom: 28px; overflow-x: auto; }
 .settings-section h3 { font-family: 'Playfair Display', serif; font-size: 1rem; color: var(--green-deep); margin-bottom: 14px; padding-bottom: 8px; border-bottom: 1px solid var(--cream-dark); }
 .settings-row { display: flex; gap: 12px; align-items: flex-end; flex-wrap: wrap; margin-bottom: 12px; }
 .settings-about { font-size: 0.82rem; color: var(--text-muted); line-height: 1.6; }
@@ -207,7 +222,7 @@ tbody td { padding: 8px 12px; color: var(--text); vertical-align: middle; }
 .doc-totals .grand { font-family: 'Playfair Display', serif; font-size: 1.2rem; color: var(--green-deep); border-top: 2px solid var(--green-deep); margin-top: 4px; padding-top: 8px; font-weight: 700; }
 .doc-footer { margin-top: 26px; padding-top: 14px; border-top: 1px solid var(--cream-dark); font-size: 0.78rem; color: var(--text-muted); font-style: italic; text-align: center; }
 .line-editor { display: grid; grid-template-columns: 3fr 0.8fr 1fr auto; gap: 8px; align-items: end; margin-bottom: 8px; }
-.line-editor input { font-family: 'Lato', sans-serif; font-size: 0.85rem; padding: 6px 8px; border: 1px solid var(--border); border-radius: 4px; background: var(--cream); }
+.line-editor input { font-family: 'Lato', sans-serif; font-size: 0.85rem; padding: 6px 8px; border: 1px solid var(--border); border-radius: 4px; background: var(--cream); min-width: 0; width: 100%; }
 
 /* REPORT COVER and PRINT DOCUMENT CONTAINERS (hidden on screen) */
 #report-cover { display: none; }
@@ -230,9 +245,32 @@ tbody td { padding: 8px 12px; color: var(--text); vertical-align: middle; }
 /* LOCATION TAG */
 .loc-tag { display: inline-block; font-size: 0.68rem; font-weight: 700; padding: 2px 7px; border-radius: 10px; background: #d1ecf1; color: #0c5460; margin-left: 4px; }
 
+/* PHONE */
+@media (max-width: 640px) {
+  header { padding: 12px 16px; }
+  /* Tabs: one swipeable row instead of wrapping into four. */
+  .tabs { flex-wrap: nowrap; overflow-x: auto; padding: 0 8px; scrollbar-width: none; -webkit-overflow-scrolling: touch; }
+  .tabs::-webkit-scrollbar { display: none; }
+  .tab-btn { flex: 0 0 auto; padding: 12px 14px; white-space: nowrap; }
+  main { padding: 16px; }
+  .card { padding: 16px; }
+  .tiles { grid-template-columns: repeat(2, 1fr); gap: 10px; }
+  .tile { padding: 14px 10px; }
+  .tile-value { font-size: 1.2rem; }
+  .ledger-cat { display: none; }
+  .ledger-legs > td { padding: 4px 8px 12px; }
+  thead th { white-space: normal; }
+  tbody td { padding: 8px 8px; }
+  .doc-sheet { padding: 20px 16px; }
+  /* Line items: description on its own row, qty / price / delete beneath. */
+  .line-editor { grid-template-columns: 1fr 1fr auto; }
+  .line-editor .li-desc { grid-column: 1 / -1; }
+}
+
 /* PRINT */
 @media print {
   * { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  .report-section { overflow: visible; }
   header, .tabs, .tax-banner, .filter-bar, .btn, .btn-header,
   #add-tx-card, #tab-ledger, #tab-mileage, #tab-settings,
   #tab-invoices, #tab-purchasing, #tab-reconcile,
@@ -509,9 +547,8 @@ tbody td { padding: 8px 12px; color: var(--text); vertical-align: middle; }
     <div class="table-wrap">
       <table>
         <thead><tr>
-          <th>Date</th><th>Type</th><th>Vendor / Description</th>
-          <th>Category</th><th>Classification</th>
-          <th>Amount</th><th>Notes</th><th>Sch. F</th><th>Check #</th><th></th>
+          <th>Date</th><th>Vendor / Description</th><th class="ledger-cat">Category</th>
+          <th style="text-align:right">Amount</th>
         </tr></thead>
         <tbody id="ledger-tbody"></tbody>
       </table>
@@ -1105,7 +1142,7 @@ tbody td { padding: 8px 12px; color: var(--text); vertical-align: middle; }
 //                          re-run every migration on load. This counter is
 //                          intentionally decoupled from APP_VERSION.
 // =====================================================
-const APP_VERSION = '7.14';
+const APP_VERSION = '7.15';
 const BACKUP_SCHEMA_VERSION = 4;
 
 // =====================================================
@@ -2120,6 +2157,8 @@ document.querySelectorAll('.tab-btn').forEach(btn => {
     btn.classList.add('active');
     btn.setAttribute('aria-selected', 'true');
     btn.setAttribute('tabindex', '0');
+    // On a phone the tab row scrolls sideways; keep the chosen tab in view.
+    btn.scrollIntoView({ block: 'nearest', inline: 'nearest' });
     document.getElementById('tab-' + btn.dataset.tab).classList.add('active');
     // Refresh reconcile book rows from live transactions when tab is opened,
     // but only if a bank statement is loaded and transactions have changed since last build.
@@ -2299,6 +2338,8 @@ function updateLedgerTiles() {
   document.getElementById('tile-expenses').textContent = fmtDollar(Math.abs(ytdExp));
   document.getElementById('tile-net').textContent = fmtDollar(net);
 
+  // Same colors as the Dashboard: balances and net income are green/red by sign.
+  document.getElementById('tile-checking').parentElement.className = 'tile ' + (checking >= 0 ? 'tile-pos' : 'tile-neg');
   const netTile = document.getElementById('tile-net').parentElement;
   netTile.className = 'tile ' + (net >= 0 ? 'tile-pos' : 'tile-neg');
 }
@@ -2348,7 +2389,8 @@ function renderDashboard() {
     { label: `Revenue ${suffix}`,      val: revenue,  signed: false },
     { label: `Expenses ${suffix}`,     val: Math.abs(expenses), signed: false },
     { label: `Net Income ${suffix}`,   val: net,      signed: true },
-    { label: `Sales Tax Due ${suffix}`, val: taxOwed,  signed: true }
+    // Money owed, not earned: neutral rather than green.
+    { label: `Sales Tax Due ${suffix}`, val: taxOwed,  signed: false }
   ].map(({ label, val, signed }) => {
     const cls = signed ? (val >= 0 ? 'tile-pos' : 'tile-neg') : '';
     return `<div class="tile ${cls}"><span class="tile-value">${fmtDollar(val)}</span><span class="tile-label">${label}</span></div>`;
@@ -2662,39 +2704,65 @@ function renderLedgerFull() {
   renderLedger();
 }
 
+// Ledger entries the user has expanded to show their legs; kept across re-renders.
+const ledgerExpanded = new Set();
+function toggleLedgerEntry(key) {
+  if (ledgerExpanded.has(key)) ledgerExpanded.delete(key); else ledgerExpanded.add(key);
+  renderLedger();
+}
+
 function renderLedger() {
   const rows = getFilteredTransactions().reverse();
   const tbody = document.getElementById('ledger-tbody');
 
-  // Group by groupId to show delete button only on first row of a group
-  const seen = new Set();
+  // One row per entry (a groupId's legs), newest first; legs show on expand.
+  // A leg with no groupId is its own entry.
+  const entries = new Map();
+  rows.forEach(t => {
+    const key = t.groupId != null ? 'g' + t.groupId : 'i' + t.id;
+    if (!entries.has(key)) entries.set(key, []);
+    entries.get(key).push(t);
+  });
 
   if (!rows.length) {
-    tbody.innerHTML = '<tr><td colspan="10" style="text-align:center;color:var(--text-muted);padding:24px">No transactions yet.</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="4" style="text-align:center;color:var(--text-muted);padding:24px">No transactions yet.</td></tr>';
   } else {
-    tbody.innerHTML = rows.map(t => {
-      const isFirst = !seen.has(t.groupId);
-      if (t.groupId) seen.add(t.groupId);
-      const deleteBtn = isFirst
-        ? `<button class="btn btn-danger btn-sm" aria-label="Delete transaction ${esc(t.desc)} on ${fmtDate(t.date)}" onclick="deleteTransactionGroup(${t.groupId})">&#x2715;</button>`
-        : `<span style="font-size:0.7rem;color:var(--text-muted)">&#x21B3;</span>`;
-      return `<tr style="${!isFirst ? 'background:#f8f4ee;' : ''}">
-        <td>${fmtDate(t.date)}</td>
-        <td style="font-size:0.75rem;color:var(--text-muted);white-space:nowrap">${esc(t.txType||'')}</td>
-        <td>${esc(t.desc)}</td>
-        <td style="font-size:0.8rem">${esc(t.cat)}</td>
-        <td>${clsTag(t.cls)}</td>
-        <td>${fmtAmt(t.amount)}</td>
-        <td style="color:var(--text-muted);font-size:0.8rem">${esc(t.notes||'')}</td>
-        <td style="font-size:0.78rem;color:var(--text-muted)">${esc(t.schf||'')}</td>
-        <td style="font-size:0.8rem">${esc(t.check||'')}</td>
-        <td>${deleteBtn}</td>
-      </tr>`;
+    tbody.innerHTML = [...entries].map(([key, legs]) => {
+      legs = legs.slice().reverse();  // posting order within the entry
+      const head = legs[0];
+      // Headline amount is the checking movement when there is one (money in
+      // or out), otherwise the entry's first leg.
+      const cash = legs.find(t => t.cat === 'Cash - Checking');
+      const amt = (cash || head).amount;
+      const otherCats = [...new Set(legs.filter(t => t !== cash).map(t => t.cat))];
+      const catLabel = otherCats.length > 1 ? `${esc(otherCats[0])} <span class="ledger-more">+${otherCats.length - 1}</span>` : esc(otherCats[0] || head.cat);
+      const open = ledgerExpanded.has(key);
+      // Delete lives inside the opened entry: out of the way of the list, and a
+      // deliberate second tap rather than a stray one.
+      const deleteBtn = head.groupId != null
+        ? `<button class="btn btn-danger btn-sm" aria-label="Delete transaction ${esc(head.desc)} on ${fmtDate(head.date)}" onclick="deleteTransactionGroup(${head.groupId})">Delete entry</button>`
+        : '';
+      const detail = open ? `<tr class="ledger-legs"><td colspan="4"><table>
+          <thead><tr><th>Category</th><th>Class</th><th style="text-align:right">Amount</th></tr></thead>
+          <tbody>${legs.map(t => {
+            const extra = [t.schf && 'Sch. F: ' + esc(t.schf), t.check && 'Check #' + esc(t.check), t.notes && esc(t.notes)].filter(Boolean).join(' &middot; ');
+            return `<tr>
+            <td>${esc(t.cat)}${extra ? `<div class="ledger-type">${extra}</div>` : ''}</td><td>${clsTag(t.cls)}</td>
+            <td style="text-align:right;white-space:nowrap">${fmtAmt(t.amount)}</td>
+          </tr>`;
+          }).join('')}</tbody></table>${deleteBtn ? `<div class="ledger-actions">${deleteBtn}</div>` : ''}</td></tr>` : '';
+      return `<tr class="ledger-entry${open ? ' open' : ''}" onclick="toggleLedgerEntry('${key}')" tabindex="0" role="button" aria-expanded="${open}"
+          onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();toggleLedgerEntry('${key}')}">
+        <td style="white-space:nowrap"><span class="ledger-caret" aria-hidden="true">&#x25B8;</span>${fmtDate(head.date)}</td>
+        <td><div>${esc(head.desc)}</div><div class="ledger-type">${esc(head.txType||'')}${legs.length > 1 ? ` &middot; ${legs.length} legs` : ''}</div></td>
+        <td class="ledger-cat">${catLabel}</td>
+        <td style="text-align:right;white-space:nowrap">${fmtAmt(amt)}</td>
+      </tr>${detail}`;
     }).join('');
   }
 
   const net = rows.reduce((s, t) => s + t.amount, 0);
-  document.getElementById('ledger-row-count').textContent = `${rows.length} row${rows.length !== 1 ? 's' : ''}`;
+  document.getElementById('ledger-row-count').textContent = `${entries.size} entr${entries.size !== 1 ? 'ies' : 'y'} (${rows.length} row${rows.length !== 1 ? 's' : ''})`;
   document.getElementById('ledger-net').textContent = fmtDollar(net);
   document.getElementById('ledger-net').className = net >= 0 ? 'amount-pos' : 'amount-neg';
 }
@@ -3289,7 +3357,7 @@ function generateReport() {
         <div class="bs-row"><span>Owner Contribution</span><span>${fmt$(ownerContrib)}</span></div>
         <div class="bs-row"><span>Owner Draw</span><span>${fmtDollar(ownerDraw)}</span></div>
         <div class="bs-row"><span>Retained Earnings</span><span>${fmt$(retained)}</span></div>
-        <div class="bs-row"><span>Net Revenue</span><span class="${netAll>=0?'amount-pos':'amount-neg'}">${fmtDollar(netAll)}</span></div>
+        <div class="bs-row"><span>Net Income</span><span class="${netAll>=0?'amount-pos':'amount-neg'}">${fmtDollar(netAll)}</span></div>
         <div class="bs-row total"><span>Total Equity</span><span>${fmt$(totalEquity)}</span></div>
       </div>
       <div class="bs-section">
