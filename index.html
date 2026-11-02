@@ -304,6 +304,8 @@ tbody td { padding: 8px 12px; color: var(--text); vertical-align: middle; }
 @media print {
   * { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
   .report-section { overflow: visible; }
+  /* On-screen reminders that don't belong on the printed copy. */
+  .no-print { display: none !important; }
   header, .tabs, .tax-banner, .filter-bar, .btn, .btn-header,
   #add-tx-card, #tab-ledger, #tab-mileage, #tab-settings,
   #tab-invoices, #tab-purchasing, #tab-reconcile,
@@ -316,7 +318,9 @@ tbody td { padding: 8px 12px; color: var(--text); vertical-align: middle; }
   /* ---- REPORT MODE (default) ---- */
   body.pm-report #tab-reports { display: block !important; }
   body.pm-report #tab-reports > .card:first-child { display: none !important; }
-  body.pm-report #print-header { display: block !important; }
+  /* The cover carries the farm name and period, so the shared print header
+     (which would sit above it) is left off the report. */
+  body.pm-report #report-cover { display: block !important; }
   #report-cover { page-break-after: always; padding-top: 1.4in; text-align: center; }
   #report-cover img { max-width: 60%; height: auto; margin: 0 auto 0.5in; display: block; }
   #report-cover .cv-title { font-family: 'Playfair Display', serif; font-size: 26pt; color: var(--print-ink); letter-spacing: 0.04em; }
@@ -5606,9 +5610,29 @@ function buildReportCover() {
     <div class="cv-rule"></div>
     <div class="cv-meta">Financial Statements &amp; Supporting Schedules<br>Prepared ${today}${getFarmCityState() ? '<br>' + esc(getFarmCityState()) : ''}</div>`;
 }
+// "Page X of Y" in the printed report's footer, via @page margin boxes
+// (Chromium 131+: Chrome and Edge; browsers without them just omit it). Added
+// only while the report prints, since @page can't be scoped to a body class.
+function addReportPageNumbers() {
+  if (document.getElementById('report-print-page')) return;
+  const style = document.createElement('style');
+  style.id = 'report-print-page';
+  style.textContent = `@media print {
+    @page {
+      @bottom-right {
+        content: "Page " counter(page) " of " counter(pages);
+        font-family: 'Lato', sans-serif; font-size: 8pt; color: #5a6357;
+      }
+    }
+    /* The cover counts as page 1 but carries no number. */
+    @page :first { @bottom-right { content: none; } }
+  }`;
+  document.head.appendChild(style);
+}
 function printReport() {
   if (!document.getElementById('report-output').innerHTML.trim()) generateReport();
   buildReportCover();
+  addReportPageNumbers();
   document.body.classList.add('pm-report');
   window.print();
 }
@@ -5616,10 +5640,13 @@ window.addEventListener('beforeprint', () => {
   if (!/pm-/.test(document.body.className) && document.getElementById('tab-reports').classList.contains('active')) {
     if (!document.getElementById('report-output').innerHTML.trim()) generateReport();
     buildReportCover();
+    addReportPageNumbers();
     document.body.classList.add('pm-report');
   }
 });
 window.addEventListener('afterprint', () => {
+  const pageNums = document.getElementById('report-print-page');
+  if (pageNums) pageNums.remove();
   document.body.classList.remove('pm-report', 'pm-doc', 'pm-invoice', 'pm-po', 'pm-mileage', 'pm-recon');
   document.getElementById('print-invoice').innerHTML = '';
   document.getElementById('print-po').innerHTML = '';
@@ -5687,7 +5714,7 @@ function buildInventoryRollForward(year, period) {
     const carried = transactions
       .filter(t => t.cls === 'Inventory' && t.date <= e && schfReleaseMethod(t.date) && SCHEDULE_F_MAP[t.cat])
       .reduce((a, t) => a + t.amount, 0);
-    if (carried > 0.005) carriedNote = `<p class="schf-note" style="color:var(--red)">${fmt$(carried)} of purchased production inputs is still on hand at year end and hasn't been deducted. If any of it was used, lost, or died in ${year}, post Inventory Used or Inventory Write-off dated in ${year}.</p>`;
+    if (carried > 0.005) carriedNote = `<p class="schf-note no-print" style="color:var(--red)">${fmt$(carried)} of purchased production inputs is still on hand at year end and hasn't been deducted. If any of it was used, lost, or died in ${year}, post Inventory Used or Inventory Write-off dated in ${year}.</p>`;
   }
   return `<div class="report-section">
     <h3>Inventory Roll Forward</h3>
