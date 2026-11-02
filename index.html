@@ -318,7 +318,9 @@ tbody td { padding: 8px 12px; color: var(--text); vertical-align: middle; }
   /* ---- REPORT MODE (default) ---- */
   body.pm-report #tab-reports { display: block !important; }
   body.pm-report #tab-reports > .card:first-child { display: none !important; }
-  body.pm-report #print-header { display: block !important; }
+  /* The cover carries the farm name and period, so the shared print header
+     (which would sit above it) is left off the report. */
+  body.pm-report #report-cover { display: block !important; }
   #report-cover { page-break-after: always; padding-top: 1.4in; text-align: center; }
   #report-cover img { max-width: 60%; height: auto; margin: 0 auto 0.5in; display: block; }
   #report-cover .cv-title { font-family: 'Playfair Display', serif; font-size: 26pt; color: var(--print-ink); letter-spacing: 0.04em; }
@@ -5622,6 +5624,8 @@ function addReportPageNumbers() {
         font-family: 'Lato', sans-serif; font-size: 8pt; color: #5a6357;
       }
     }
+    /* The cover counts as page 1 but carries no number. */
+    @page :first { @bottom-right { content: none; } }
   }`;
   document.head.appendChild(style);
 }
