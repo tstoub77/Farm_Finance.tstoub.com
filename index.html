@@ -424,6 +424,7 @@ tbody td { padding: 8px 12px; color: var(--text); vertical-align: middle; }
     <p>Finance Records</p>
   </button>
   <div class="header-right">
+    <button class="btn-header" id="gdrive-sync-btn" style="display:none" onclick="gdriveHeaderSync()">Sync from Drive</button>
     <button class="unsaved-badge" id="unsaved-badge" onclick="saveNow()" title="Click to back up all farm data">Back Up Now</button>
   </div>
 </header>
@@ -1208,7 +1209,7 @@ tbody td { padding: 8px 12px; color: var(--text); vertical-align: middle; }
 //                          re-run every migration on load. This counter is
 //                          intentionally decoupled from APP_VERSION.
 // =====================================================
-const APP_VERSION = '7.16';
+const APP_VERSION = '7.17';
 const BACKUP_SCHEMA_VERSION = 4;
 
 // =====================================================
@@ -1882,6 +1883,7 @@ function gdriveInitClient() {
       if (resp && resp.access_token) {
         _gToken = resp.access_token;
         _gTokenExp = Date.now() + (parseInt(resp.expires_in || '3600') * 1000) - 60000; // 1-min safety margin
+        gdriveSaveToken();
         if (_gTokenResolve) _gTokenResolve(_gToken);
       } else if (_gTokenReject) {
         _gTokenReject(new Error('No access token returned'));
@@ -1898,8 +1900,28 @@ function gdriveInitClient() {
 
 // Resolve a valid access token. interactive=false attempts a silent refresh
 // (no popup); interactive=true shows the Google account/consent popup.
+// The access token is kept in localStorage until it expires (about an hour)
+// so reopening the app -- especially on a phone, where a sign-in popup can't
+// open without a tap -- doesn't need a fresh Google sign-in each time. Scope is
+// drive.appdata only, and the farm data itself already lives in localStorage.
+function gdriveSaveToken() {
+  try { localStorage.setItem('sff_gdrive_token', JSON.stringify({ t: _gToken, exp: _gTokenExp })); } catch (e) {}
+}
+function gdriveClearToken() {
+  _gToken = null; _gTokenExp = 0;
+  localStorage.removeItem('sff_gdrive_token');
+}
+function gdriveLoadToken() {
+  if (_gToken) return;
+  try {
+    const s = JSON.parse(localStorage.getItem('sff_gdrive_token') || 'null');
+    if (s && s.t && Date.now() < s.exp) { _gToken = s.t; _gTokenExp = s.exp; }
+  } catch (e) {}
+}
+
 function gdriveGetToken(interactive) {
   return new Promise((resolve, reject) => {
+    gdriveLoadToken();
     if (_gToken && Date.now() < _gTokenExp) { resolve(_gToken); return; }
     const client = gdriveInitClient();
     if (!client) { reject(new Error('Google sign-in not loaded yet. Try again in a moment.')); return; }
@@ -1921,7 +1943,7 @@ async function gdriveApi(url, opts) {
   const resp = await fetch(url, opts);
   if (resp.status === 401) {
     // Token rejected: drop it and force one interactive re-auth, then retry once.
-    _gToken = null; _gTokenExp = 0;
+    gdriveClearToken();
     const t2 = await gdriveGetToken(true);
     opts.headers.Authorization = 'Bearer ' + t2;
     return fetch(url, opts);
@@ -2002,7 +2024,8 @@ function gdriveDisconnect() {
   if (window.google && google.accounts && google.accounts.oauth2 && _gToken) {
     try { google.accounts.oauth2.revoke(_gToken); } catch (e) {}
   }
-  _gToken = null; _gTokenExp = 0;
+  gdriveClearToken();
+  gdriveShowSyncButton(false);
   localStorage.removeItem('sff_gdrive_connected');
   localStorage.removeItem('sff_gdrive_fileid');
   localStorage.removeItem('sff_gdrive_base_rev');
@@ -2020,8 +2043,10 @@ async function gdrivePull(auto) {
   } catch (e) {
     if (!auto) showToast('Drive sync failed: ' + (e.message || e), 'error');
     gdriveSetStatus('Sync error: ' + (e.message || e));
+    gdriveShowSyncButton(true);
     return;
   }
+  gdriveShowSyncButton(false); // reached Drive; the header fallback isn't needed
   if (!remote) {
     gdriveSetStatus(auto ? 'Connected — no cloud data yet. Use “Save to Drive.”' : 'No cloud data yet. Use “Save to Drive.”');
     return;
@@ -2121,20 +2146,63 @@ function gdriveRenderPanel() {
   }
 }
 
-// Called from init(): render the panel and, if connected, silently pull.
+// Header "Sync from Drive" / "Connect Drive" button. Shown when the automatic
+// sync on open couldn't run -- on phones the Google sign-in popup is blocked
+// unless it comes from a tap -- or when this device has no data and isn't
+// connected yet (e.g. the browser cleared the site's storage).
+function gdriveShowSyncButton(show) {
+  const btn = document.getElementById('gdrive-sync-btn');
+  if (!btn) return;
+  btn.textContent = gdriveConnected() ? 'Sync from Drive' : 'Connect Drive';
+  btn.style.display = show ? '' : 'none';
+}
+
+function gdriveHeaderSync() {
+  if (!gdriveConnected()) { gdriveConnect(); return; }
+  gdriveSetStatus('Syncing…');
+  // Request the token right here, inside the tap, so the popup is allowed.
+  gdriveGetToken(false)
+    .then(() => gdrivePull(false))
+    .catch(e => {
+      gdriveSetStatus('Sync error: ' + (e.message || e));
+      showToast('Google sign-in failed: ' + (e.message || e), 'error');
+    });
+}
+
+// Called from init(): render the panel and, if connected, pull from Drive.
 async function gdriveInitOnLoad() {
   gdriveRenderPanel();
-  if (!gdriveConnected()) return;
-  // Give the GIS script a moment if it hasn't finished loading.
+  // Ask the browser not to evict this site's storage (helps Safari/phones).
+  try { if (navigator.storage && navigator.storage.persist) navigator.storage.persist(); } catch (e) {}
+  if (!gdriveConnected()) {
+    if (!gdriveHasLocalData()) gdriveShowSyncButton(true);
+    return;
+  }
+  // Give the GIS script time to load (phones on cellular can be slow).
   let tries = 0;
-  while (!(window.google && google.accounts && google.accounts.oauth2) && tries < 20) {
+  while (!(window.google && google.accounts && google.accounts.oauth2) && tries < 60) {
     await new Promise(r => setTimeout(r, 150)); tries++;
   }
+  gdriveLoadToken();
+  const haveToken = _gToken && Date.now() < _gTokenExp;
+  // Without a saved token, getting one needs a popup. Phones block popups that
+  // aren't from a tap, so skip straight to the button there.
+  const touch = window.matchMedia && matchMedia('(pointer: coarse)').matches;
+  if (!haveToken && touch) {
+    gdriveSetStatus('Connected — tap “Sync from Drive” to load the latest data.');
+    gdriveShowSyncButton(true);
+    return;
+  }
   try {
-    await gdriveGetToken(false); // silent; throws if interaction needed
+    // Desktop: silent attempt; a popup that never resolves gives up after 15s.
+    await Promise.race([
+      gdriveGetToken(false),
+      new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), 15000)),
+    ]);
     await gdrivePull(true);
   } catch (e) {
-    gdriveSetStatus('Connected — sign-in needed. Click “Sync now.”');
+    gdriveSetStatus('Connected — sign-in needed. Click “Sync from Drive.”');
+    gdriveShowSyncButton(true);
   }
 }
 
