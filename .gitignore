@@ -7,3 +7,13 @@ Mileage_*.csv
 Market_*.csv
 Chase*.csv
 *_Activity_*.csv
+
+# Broader data-file guard
+*.csv
+*.xlsx
+*.xls
+*.pdf
+*.json
+transfer-details-*
+FarmBackup*
+.env*

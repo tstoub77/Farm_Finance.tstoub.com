@@ -1537,7 +1537,7 @@ function todayStr() {
 
 function populateSelect(id, values) {
   const sel = document.getElementById(id);
-  sel.innerHTML = values.map(v => `<option value="${v}">${v || '(none)'}</option>`).join('');
+  sel.innerHTML = values.map(v => `<option value="${esc(v)}">${esc(v) || '(none)'}</option>`).join('');
 }
 
 // =====================================================
@@ -1551,7 +1551,7 @@ function onTxTypeChange() {
   document.getElementById('tx-type-hint').textContent = def.hint;
 
   const catSel = document.getElementById('tx-category');
-  catSel.innerHTML = def.categories.map(c => `<option value="${c}">${c}</option>`).join('');
+  catSel.innerHTML = def.categories.map(c => `<option value="${esc(c)}">${esc(c)}</option>`).join('');
 
   const fgQty = document.getElementById('fg-qty');
   fgQty.style.display = def.showQty ? '' : 'none';
@@ -1568,7 +1568,7 @@ function onTxTypeChange() {
     fgLoc.style.display = '';
     fgChan.style.display = '';
     const locSel = document.getElementById('tx-location');
-    locSel.innerHTML = saleLocations.map(l => `<option value="${l.name}">${l.name} (${l.rate}%)</option>`).join('');
+    locSel.innerHTML = saleLocations.map(l => `<option value="${esc(l.name)}">${esc(l.name)} (${esc(l.rate)}%)</option>`).join('');
   } else {
     fgLoc.style.display = 'none';
     fgChan.style.display = 'none';
@@ -2780,14 +2780,14 @@ function updateClassificationFilter() {
   const present = [...new Set(transactions.map(t => t.cls))].sort();
   const sel = document.getElementById('filter-classification');
   const cur = sel.value;
-  sel.innerHTML = '<option value="">All</option>' + present.map(c => `<option value="${c}">${c}</option>`).join('');
+  sel.innerHTML = '<option value="">All</option>' + present.map(c => `<option value="${esc(c)}">${esc(c)}</option>`).join('');
   if (present.includes(cur)) sel.value = cur;
 
   // Keep year filter in sync
   const years = [...new Set(transactions.map(t => t.date.substring(0,4)))].filter(Boolean).sort().reverse();
   const yrSel = document.getElementById('filter-year');
   const curYr = yrSel.value;
-  yrSel.innerHTML = '<option value="">All Years</option>' + years.map(y => `<option value="${y}">${y}</option>`).join('');
+  yrSel.innerHTML = '<option value="">All Years</option>' + years.map(y => `<option value="${esc(y)}">${esc(y)}</option>`).join('');
   if (years.includes(curYr)) yrSel.value = curYr;
 }
 
